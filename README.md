@@ -46,14 +46,30 @@ type Config struct {
 }
 
 var cfg Config
-cfg.AddLayer(confstruct.Primitive(map[string]any{   // default values (lowest priority, required)
+
+// Layer 1 — hard-coded defaults (lowest priority, must be a static backend).
+cfg.AddLayer(confstruct.Primitive(map[string]any{
     "ListenAddr":    "localhost:8080",
     "Database.User": "app",
     "Database.Host": "localhost",
 }))
-cfg.AddLayer(file.Backend("config.yaml"))           // file overrides defaults
-cfg.AddLayer(env.Backend("APP_"))                   // env overrides file
-cfg.AddLayer(consul.Backend("myapp/"))              // remote backend wins over all
+
+// Layer 2 — config file overrides defaults.
+fileBackend, err := confstruct.File("config.yaml")
+if err != nil {
+    log.Fatal(err)
+}
+cfg.AddLayer(fileBackend)
+
+// Layer 3 — environment variables override the file.
+envBackend, err := confstruct.Env(confstruct.WithPrefix("APP"))
+if err != nil {
+    log.Fatal(err)
+}
+cfg.AddLayer(envBackend)
+
+// Layer 4 — remote backend wins over all; receives live updates.
+cfg.AddLayer(consul.Backend("myapp/"))
 
 if err := confstruct.Populate(ctx, &cfg); err != nil {
     log.Fatal(err)
@@ -97,6 +113,27 @@ cfg.AddLayer(cliFlags)   // highest precedence
 ```
 
 **The lowest-priority backend must not be a `WatchableBackend`.** It serves as the stable default that is always present from the moment `Populate` returns. This guarantees every field has a valid baseline value even before any remote source responds.
+
+**confstruct is explicit by design.** It is the caller's responsibility to cover every entry in the config struct with a value in the lowest layer. If a field has no value in any layer, `Value()` silently returns the Go zero value and `IsSet()` returns `false` — there is no error. This is intentional: the library does not guess at defaults.
+
+**Recommended practice:** write a unit test that calls `Populate` with only the lowest layer registered and asserts that `IsSet()` is `true` for every entry field. This catches omissions before they reach production.
+
+```go
+func TestDefaultsAreComplete(t *testing.T) {
+    var cfg AppConfig
+    cfg.AddLayer(confstruct.Primitive(defaultValues))
+    if err := confstruct.Populate(context.Background(), &cfg); err != nil {
+        t.Fatal(err)
+    }
+    if !cfg.ListenAddr.IsSet() {
+        t.Error("ListenAddr has no default")
+    }
+    if !cfg.Database.Host.IsSet() {
+        t.Error("Database.Host has no default")
+    }
+    // ... one assertion per entry field
+}
+```
 
 When a remote backend pushes an update for a field, the entry re-resolves across all layers immediately, under its write-lock. If the remote backend later signals that a key was removed, the next-highest layer that has a value becomes the winner — falling back to the local default if no other layer covers it.
 
@@ -156,17 +193,65 @@ cfg.AddLayer(confstruct.Primitive(map[string]any{
 }))
 ```
 
-Keys are dot-separated field paths. Values must be of a type compatible with the target entry (exact match, or numeric types within the numeric family).
+Keys are dot-separated field paths matching the struct layout. Values must be of a type compatible with the target entry — exact match, or any numeric type (conversions are handled automatically).
 
-## Common backend examples
+### Env
 
-These are illustrative — the caller decides what backends to register and in what order.
+`Env` reads from OS environment variables and an optional `.env` file. Field paths are mapped to env var names by uppercasing and replacing dots with underscores. An optional prefix is prepended.
+
+```go
+// Database.Host → APP_DATABASE_HOST
+// ListenAddr    → APP_LISTEN_ADDR
+envBackend, err := confstruct.Env(
+    confstruct.WithPrefix("APP"),
+    confstruct.WithDotEnv(".env"), // silently skipped if the file does not exist
+)
+```
+
+OS environment variables take precedence over `.env` file values. All values are returned as strings; confstruct parses them into the target field type.
+
+### File
+
+`File` reads from a YAML, JSON, or TOML file. The format is inferred from the file extension; `WithFormat` overrides it for non-standard extensions.
+
+```go
+backend, err := confstruct.File("config.yaml")
+backend, err := confstruct.File("config.json")
+backend, err := confstruct.File("config.toml")
+backend, err := confstruct.File("config.cfg", confstruct.WithFormat("toml"))
+```
+
+Nested struct paths map to nested file keys via case-insensitive matching at each level. `Lookup("Database.Host")` matches any of `database.host`, `DATABASE.HOST`, or `Database.Host` in the file.
+
+```yaml
+# config.yaml
+database:
+  host: localhost
+  port: 5432
+```
+
+```json
+// config.json
+{"database": {"host": "localhost", "port": 5432}}
+```
+
+```toml
+# config.toml
+[database]
+host = "localhost"
+port = 5432
+```
+
+The file is read once at construction time. `File` is a static backend.
+
+**Type notes:** JSON numbers unmarshal to `float64`; TOML integers unmarshal to `int64`; YAML integers unmarshal to `int`. All are handled by confstruct's numeric coercion — a `float64` from JSON fills an `Int32Entry` correctly, and so on. For very large integers (> 2^53), prefer YAML or TOML over JSON to avoid float64 precision loss.
+
+## Other backend shapes
+
+The table below shows the shapes of backends you might implement or source from third-party packages. confstruct does not provide these.
 
 | Backend | Kind | Example source |
 |---|---|---|
-| Primitive | Static | Hardcoded defaults or forced overrides |
-| Config file | Static | `config.yaml`, `config.toml`, etc. |
-| Environment variables | Static | `APP_PORT=8080` |
 | Command-line flags | Static | `--port 8080` |
 | Consul | Watchable | Live key-value updates |
 | Vault | Watchable | Secret leases with renewal |

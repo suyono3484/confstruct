@@ -18,20 +18,33 @@
 //
 //	go run user_code.go
 //
-// The .env file (optional) is loaded from the current directory.
-// Environment variables with the APP_ prefix override everything.
+// Layers, in ascending precedence order:
+//
+//  1. Primitive — hard-coded application defaults (always present).
+//  2. File      — config.yaml in the current directory (optional; skipped if absent).
+//  3. Env       — .env file and APP_-prefixed environment variables (highest priority).
+//
+// Example config.yaml:
+//
+//	server:
+//	  port: 9090
+//	database:
+//	  host: postgres.internal
+//	  name: production
+//	  user: appuser
 //
 // Example .env:
 //
 //	APP_DATABASE_PASSWORD=secret
-//	APP_SERVER_PORT=9090
 //	APP_DEBUG=true
 package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"os"
 
 	cs "github.com/suyono3484/confstruct"
 )
@@ -89,7 +102,17 @@ func main() {
 		"Debug":                 false,
 	}))
 
-	// Layer 2 — Env: environment variables and optional .env file (higher priority).
+	// Layer 2 — File: config.yaml in the current directory (optional).
+	// Nested YAML keys map case-insensitively to struct field paths:
+	//   database.host → Database.Host
+	//   server.port   → Server.Port
+	if fileBackend, err := cs.File("config.yaml"); err == nil {
+		cfg.AddLayer(fileBackend)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		log.Fatalf("config file: %v", err)
+	}
+
+	// Layer 3 — Env: environment variables and optional .env file (highest priority).
 	// Field paths are mapped to env var names by uppercasing and replacing dots
 	// with underscores, then prepending the APP_ prefix:
 	//   Server.Host           → APP_SERVER_HOST
