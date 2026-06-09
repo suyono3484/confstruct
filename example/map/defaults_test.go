@@ -23,29 +23,9 @@ import (
 	cs "github.com/suyono3484/confstruct"
 )
 
-// defaultValues mirrors the Map backend in main(). Keeping it as a package-level
-// variable lets both main() and the test reference the same set of defaults,
-// so adding a new struct field forces a single update in one place.
-var defaultValues = map[string]any{
-	"Server.Host":           "0.0.0.0",
-	"Server.Port":           8080,
-	"Server.MaxConnections": 1000,
-	"Database.Host":         "localhost",
-	"Database.Port":         5432,
-	"Database.Name":         "myapp",
-	"Database.User":         "postgres",
-	// Database.Password is intentionally absent: it has no safe default and must
-	// be supplied at runtime via APP_DATABASE_PASSWORD. The application validates
-	// this with an explicit IsSet() check after Populate.
-	"Cache.Host": "localhost",
-	"Cache.Port": 6379,
-	"Cache.TTL":  300,
-	"Debug":      false,
-}
-
-// TestDefaultsAreComplete verifies that every entry with a safe default is
-// covered by the lowest layer. Register only the Map backend so that
-// higher-priority sources (file, env) cannot mask a missing default.
+// TestDefaultsAreComplete verifies that every entry with a safe default is covered
+// by the Map layer. Register only the Map backend so that higher-priority sources
+// (file, env) cannot mask a missing key.
 func TestDefaultsAreComplete(t *testing.T) {
 	var cfg AppConfig
 	cfg.AddLayer(cs.Map(defaultValues))
@@ -72,7 +52,7 @@ func TestDefaultsAreComplete(t *testing.T) {
 
 	for _, e := range entries {
 		if !e.isSet {
-			t.Errorf("%s has no default value in the lowest layer", e.name)
+			t.Errorf("%s has no default value in the Map layer", e.name)
 		}
 	}
 }

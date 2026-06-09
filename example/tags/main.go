@@ -14,13 +14,16 @@
 
 // Run this example with:
 //
-//	go run user_code.go
+//	go run .
+//
+// This example uses MapFromTags() to supply hard-coded defaults from cs.default
+// struct tag annotations, keeping defaults co-located with the field declarations.
 //
 // Layers, in ascending precedence order:
 //
-//  1. Map  — hard-coded application defaults (always present).
-//  2. File — config.yaml in the current directory (optional; skipped if absent).
-//  3. Env  — .env file and APP_-prefixed environment variables (highest priority).
+//  1. MapFromTags — defaults read from cs.default struct tags (always present).
+//  2. File        — config.yaml in the current directory (optional; skipped if absent).
+//  3. Env         — .env file and APP_-prefixed environment variables (highest priority).
 //
 // Example config.yaml:
 //
@@ -49,25 +52,25 @@ import (
 
 // ServerConfig holds HTTP server settings.
 type ServerConfig struct {
-	Host           cs.StringEntry
-	Port           cs.IntEntry
-	MaxConnections cs.IntEntry
+	Host           cs.StringEntry `cs.default:"0.0.0.0"`
+	Port           cs.IntEntry    `cs.default:"8080"`
+	MaxConnections cs.IntEntry    `cs.default:"1000"`
 }
 
 // DatabaseConfig holds relational database settings.
 type DatabaseConfig struct {
-	Host     cs.StringEntry
-	Port     cs.IntEntry
-	Name     cs.StringEntry
-	User     cs.StringEntry
-	Password cs.StringEntry
+	Host     cs.StringEntry `cs.default:"localhost"`
+	Port     cs.IntEntry    `cs.default:"5432"`
+	Name     cs.StringEntry `cs.default:"myapp"`
+	User     cs.StringEntry `cs.default:"postgres"`
+	Password cs.StringEntry // intentionally no default; validated after Populate
 }
 
 // CacheConfig holds Redis / in-process cache settings.
 type CacheConfig struct {
-	Host cs.StringEntry
-	Port cs.IntEntry
-	TTL  cs.IntEntry // seconds
+	Host cs.StringEntry `cs.default:"localhost"`
+	Port cs.IntEntry    `cs.default:"6379"`
+	TTL  cs.IntEntry    `cs.default:"300"` // seconds
 }
 
 // AppConfig is the top-level configuration struct.
@@ -78,27 +81,16 @@ type AppConfig struct {
 	Server   ServerConfig
 	Database DatabaseConfig
 	Cache    CacheConfig
-	Debug    cs.BoolEntry
+	Debug    cs.BoolEntry `cs.default:"false"`
 }
 
 func main() {
 	var cfg AppConfig
 
-	// Layer 1 — Map: hard-coded application defaults (lowest priority).
-	// Every key is the dot-separated struct field path.
-	cfg.AddLayer(cs.Map(map[string]any{
-		"Server.Host":           "0.0.0.0",
-		"Server.Port":           8080,
-		"Server.MaxConnections": 1000,
-		"Database.Host":         "localhost",
-		"Database.Port":         5432,
-		"Database.Name":         "myapp",
-		"Database.User":         "postgres",
-		"Cache.Host":            "localhost",
-		"Cache.Port":            6379,
-		"Cache.TTL":             300,
-		"Debug":                 false,
-	}))
+	// Layer 1 — MapFromTags: defaults read from cs.default struct tags (lowest priority).
+	// The tag key formula is cs.<suffix>, so MapFromTags(&cfg, "default") reads cs.default tags.
+	// All tag values are strings; confstruct coerces them into the target entry type.
+	cfg.AddLayer(cs.MapFromTags(&cfg, "default"))
 
 	// Layer 2 — File: config.yaml in the current directory (optional).
 	// Nested YAML keys map case-insensitively to struct field paths:

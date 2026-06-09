@@ -230,6 +230,38 @@ cfg.AddLayer(confstruct.Map(map[string]any{
 
 Keys are dot-separated field paths matching the struct layout. Values must be of a type compatible with the target entry — exact match, or any numeric type (conversions are handled automatically).
 
+### MapFromTags
+
+`MapFromTags` returns a Backend that reads values from struct tag annotations on entry fields. The tag key is `cs.` followed by a suffix you supply, so `MapFromTags(&cfg, "default")` reads `cs.default` tags.
+
+```go
+type ServerConfig struct {
+    Host           confstruct.StringEntry `cs.default:"localhost"`
+    Port           confstruct.IntEntry    `cs.default:"8080"`
+    MaxConnections confstruct.IntEntry    `cs.default:"1000"`
+}
+
+cfg.AddLayer(confstruct.MapFromTags(&cfg, "default"))
+```
+
+Values are always strings; confstruct coerces them into the target entry type using the same rules as the Env backend — numeric parsing, boolean parsing, and so on. `MapFromTags` panics if passed a non-pointer or non-struct.
+
+**Test your tags.** Tag parsing produces no runtime signal on a missing or misspelled tag — a typo silently yields an unset entry. Write a unit test that registers only the `MapFromTags` backend and asserts `IsSet()` for every field that should be covered:
+
+```go
+func TestTagDefaultsAreComplete(t *testing.T) {
+    var cfg AppConfig
+    cfg.AddLayer(confstruct.MapFromTags(&cfg, "default"))
+    if err := confstruct.Populate(context.Background(), &cfg); err != nil {
+        t.Fatal(err)
+    }
+    if !cfg.Server.Host.IsSet() {
+        t.Error("Server.Host has no cs.default tag")
+    }
+    // ... one assertion per tagged entry field
+}
+```
+
 ### Env
 
 `Env` reads from OS environment variables and an optional `.env` file. Field paths are mapped to env var names by uppercasing and replacing dots with underscores. An optional prefix is prepended.
