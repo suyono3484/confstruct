@@ -96,10 +96,41 @@ Entry types are the building blocks of a config struct. Each one wraps a Go prim
 | `UintEntry`, `Uint8Entry`, `Uint16Entry`, `Uint32Entry`, `Uint64Entry` | `uint`, `uint8`, `uint16`, `uint32`, `uint64` |
 | `Float32Entry`, `Float64Entry` | `float32`, `float64` |
 
-Each entry type exposes two methods:
+Each entry type exposes four methods:
 
 - `Value() T` — returns the pre-resolved value from the highest-precedence backend that has one, or the zero value if none do.
 - `IsSet() bool` — reports whether any backend currently has a value for this field.
+- `SourceName() string` — returns the `Name()` of the backend that provided the resolved value, or an empty string if no backend has a value.
+- `SourceDesc() string` — returns the `Describe()` of the backend that provided the resolved value, or an empty string if no backend has a value.
+
+## Diagnostics
+
+`OnResolve` registers a hook that is called once per key after `Populate` sets the initial resolved value, and again whenever a watchable backend pushes an update. It is intended for logging and debugging — not for application logic.
+
+```go
+type ResolveHook func(key string, value any, backendName, backendDesc string)
+
+func (m *Meta) OnResolve(h ResolveHook)
+```
+
+- `key` — dot-separated struct field path (e.g. `"Database.Host"`, `"Cache.TTL"`).
+- `value` — the resolved value as `any`.
+- `backendName` — the `Name()` of the winning backend.
+- `backendDesc` — the `Describe()` of the winning backend; may be empty.
+
+The hook is not called when no backend has a value for a key. Multiple hooks may be registered; they are called in registration order.
+
+```go
+cfg.OnResolve(func(key string, value any, backendName, backendDesc string) {
+    if backendDesc != "" {
+        log.Printf("config: %s = %v  (from %s: %s)", key, value, backendName, backendDesc)
+    } else {
+        log.Printf("config: %s = %v  (from %s)", key, value, backendName)
+    }
+})
+```
+
+`OnResolve` must be called before `Populate`. Hooks registered after `Populate` returns will not receive the initial resolution callbacks.
 
 ## Layering and precedence
 
@@ -146,6 +177,8 @@ Each backend is independent. `confstruct` does not know or care how a backend re
 ```go
 type Backend interface {
     Lookup(path string) (any, bool, error)
+    Name() string
+    Describe() string
 }
 ```
 
@@ -158,6 +191,8 @@ type Backend interface {
 ```
 
 The `bool` return value distinguishes "this backend has a value of zero" from "this backend has no value at all", preserving the set/unset distinction at the source level.
+
+`Name` returns the backend type identifier — a stable string suitable for logging and metrics. `Describe` returns instance-specific detail (source path, prefix, key count, etc.) and may return an empty string if there is nothing meaningful to add. The built-in backends expose their names as exported constants (`PrimitiveBackendName`, `EnvBackendName`, `FileBackendName`) so callers can compare against them without hard-coding strings.
 
 ### Watchable backends
 

@@ -14,7 +14,10 @@
 
 package confstruct
 
-import "maps"
+import (
+	"fmt"
+	"maps"
+)
 
 // Primitive returns a Backend backed by the given key-value map.
 // Keys must be dot-separated field paths matching the config struct layout.
@@ -30,7 +33,15 @@ type primitiveBackend struct {
 	values map[string]any
 }
 
+const PrimitiveBackendName = "primitive"
+
 func (p *primitiveBackend) Lookup(path string) (any, bool, error) {
 	v, ok := p.values[path]
 	return v, ok, nil
+}
+
+func (p *primitiveBackend) Name() string { return PrimitiveBackendName }
+
+func (p *primitiveBackend) Describe() string {
+	return fmt.Sprintf("%d keys", len(p.values))
 }

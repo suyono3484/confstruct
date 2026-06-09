@@ -228,6 +228,9 @@ func (f *fakeWatchable) Watch(_ context.Context, path string, hook func(any, boo
 	f.hooks[path] = hook
 }
 
+func (f *fakeWatchable) Name() string     { return "fakeWatchable" }
+func (f *fakeWatchable) Describe() string { return "" }
+
 func (f *fakeWatchable) trigger(path string, v any, ok bool) {
 	if h, exists := f.hooks[path]; exists {
 		h(v, ok)

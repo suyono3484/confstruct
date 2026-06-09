@@ -65,6 +65,23 @@ type envBackend struct {
 	dotEnv     map[string]string
 }
 
+const EnvBackendName = "env"
+
+func (e *envBackend) Name() string { return EnvBackendName }
+
+func (e *envBackend) Describe() string {
+	switch {
+	case e.prefix != "" && e.dotEnvPath != "":
+		return "prefix=" + e.prefix + ", dotenv=" + e.dotEnvPath
+	case e.prefix != "":
+		return "prefix=" + e.prefix
+	case e.dotEnvPath != "":
+		return "dotenv=" + e.dotEnvPath
+	default:
+		return ""
+	}
+}
+
 func (e *envBackend) Lookup(path string) (any, bool, error) {
 	key := e.pathToKey(path)
 	if val, ok := os.LookupEnv(key); ok {

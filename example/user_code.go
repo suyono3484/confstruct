@@ -126,6 +126,15 @@ func main() {
 	}
 	cfg.AddLayer(envBackend)
 
+	// Optional: log every resolved key and its winning backend for diagnostics.
+	cfg.OnResolve(func(key string, value any, backendName, backendDesc string) {
+		if backendDesc != "" {
+			log.Printf("config: %-30s = %-20v  (from %s: %s)", key, value, backendName, backendDesc)
+		} else {
+			log.Printf("config: %-30s = %-20v  (from %s)", key, value, backendName)
+		}
+	})
+
 	if err := cs.Populate(context.Background(), &cfg); err != nil {
 		log.Fatalf("populate: %v", err)
 	}

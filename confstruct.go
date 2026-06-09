@@ -25,9 +25,12 @@ import (
 
 // Backend is the extension point for configuration sources. Lookup is called
 // with the field's dot-separated struct path and returns the raw value for that
-// field, if the backend has one.
+// field, if the backend has one. Name returns the backend type identifier and
+// Describe returns instance-specific detail; both are for debug and diagnostic use.
 type Backend interface {
 	Lookup(path string) (any, bool, error)
+	Name() string
+	Describe() string
 }
 
 // WatchableBackend extends Backend for remote sources that push updates.
@@ -38,11 +41,18 @@ type WatchableBackend interface {
 	Watch(ctx context.Context, path string, hook func(v any, ok bool))
 }
 
+// ResolveHook is called whenever a key's resolved value is determined or
+// updated. key is the dot-separated struct field path, value is the resolved
+// value, backendName and backendDesc identify the winning backend.
+type ResolveHook func(key string, value any, backendName, backendDesc string)
+
 // layerManager is satisfied by all entry types and lets Populate initialize
 // and write into per-layer slot storage without knowing the concrete type T.
 type layerManager interface {
 	initSlots(n int)
+	initSlotMeta(index int, name, desc string)
 	setSlot(index int, v any, ok bool)
+	resolvedState() (value any, backendName, backendDesc string, isSet bool)
 }
 
 var (
@@ -51,10 +61,11 @@ var (
 )
 
 // Meta holds globally registered backends. Embedding it in a config struct
-// promotes AddLayer onto the struct directly.
+// promotes AddLayer and OnResolve onto the struct directly.
 type Meta struct {
-	backends  []Backend
-	populated atomic.Bool
+	backends     []Backend
+	resolveHooks []ResolveHook
+	populated    atomic.Bool
 }
 
 // AddLayer registers a backend as a configuration layer. Layers added later
@@ -64,20 +75,37 @@ func (m *Meta) AddLayer(b Backend) {
 	m.backends = append(m.backends, b)
 }
 
+// OnResolve registers a hook that is called once after Populate sets the
+// initial resolved value for each key, and again whenever a watchable backend
+// pushes an update that changes the winner. The hook is not called when no
+// backend has a value for the key.
+func (m *Meta) OnResolve(h ResolveHook) {
+	m.resolveHooks = append(m.resolveHooks, h)
+}
+
 type layerSlot[T any] struct {
-	value T
-	ok    bool
+	value       T
+	ok          bool
+	backendName string
+	backendDesc string
 }
 
 type entry[T any] struct {
-	mu       sync.RWMutex
-	slots    []layerSlot[T]
-	resolved T
-	isSet    bool
+	mu           sync.RWMutex
+	slots        []layerSlot[T]
+	resolved     T
+	isSet        bool
+	resolvedName string
+	resolvedDesc string
 }
 
 func (e *entry[T]) initSlots(n int) {
 	e.slots = make([]layerSlot[T], n)
+}
+
+func (e *entry[T]) initSlotMeta(index int, name, desc string) {
+	e.slots[index].backendName = name
+	e.slots[index].backendDesc = desc
 }
 
 func (e *entry[T]) setSlot(index int, v any, ok bool) {
@@ -88,9 +116,11 @@ func (e *entry[T]) setSlot(index int, v any, ok bool) {
 		if err != nil {
 			return
 		}
-		e.slots[index] = layerSlot[T]{value: coerced, ok: true}
+		e.slots[index].value = coerced
+		e.slots[index].ok = true
 	} else {
-		e.slots[index] = layerSlot[T]{}
+		e.slots[index].value = *new(T)
+		e.slots[index].ok = false
 	}
 	e.resolveUnderLock()
 }
@@ -100,12 +130,16 @@ func (e *entry[T]) resolveUnderLock() {
 		if e.slots[i].ok {
 			e.resolved = e.slots[i].value
 			e.isSet = true
+			e.resolvedName = e.slots[i].backendName
+			e.resolvedDesc = e.slots[i].backendDesc
 			return
 		}
 	}
 	var zero T
 	e.resolved = zero
 	e.isSet = false
+	e.resolvedName = ""
+	e.resolvedDesc = ""
 }
 
 // Value returns the resolved value from the highest-precedence backend that
@@ -121,6 +155,28 @@ func (e *entry[T]) IsSet() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.isSet
+}
+
+func (e *entry[T]) resolvedState() (any, string, string, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.resolved, e.resolvedName, e.resolvedDesc, e.isSet
+}
+
+// SourceName returns the Name() of the backend that provided the resolved value.
+// Returns an empty string if no backend has a value for this field.
+func (e *entry[T]) SourceName() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.resolvedName
+}
+
+// SourceDesc returns the Describe() of the backend that provided the resolved value.
+// Returns an empty string if no backend has a value for this field.
+func (e *entry[T]) SourceDesc() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.resolvedDesc
 }
 
 type IntEntry struct{ entry[int] }
@@ -250,7 +306,20 @@ func walkAndInject(ctx context.Context, sv reflect.Value, meta *Meta, prefix str
 		if reflect.PointerTo(f.Type).Implements(layerManagerType) {
 			lm := fv.Addr().Interface().(layerManager)
 			lm.initSlots(len(meta.backends))
+			notify := func() {
+				if len(meta.resolveHooks) == 0 {
+					return
+				}
+				value, name, desc, isSet := lm.resolvedState()
+				if !isSet {
+					return
+				}
+				for _, h := range meta.resolveHooks {
+					h(key, value, name, desc)
+				}
+			}
 			for idx, b := range meta.backends {
+				lm.initSlotMeta(idx, b.Name(), b.Describe())
 				v, ok, err := b.Lookup(key)
 				if err != nil {
 					ok = false
@@ -259,9 +328,11 @@ func walkAndInject(ctx context.Context, sv reflect.Value, meta *Meta, prefix str
 				if wb, watchable := b.(WatchableBackend); watchable {
 					wb.Watch(ctx, key, func(v any, ok bool) {
 						lm.setSlot(idx, v, ok)
+						notify()
 					})
 				}
 			}
+			notify()
 			continue
 		}
 

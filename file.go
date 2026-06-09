@@ -74,13 +74,36 @@ func File(path string, opts ...FileOption) (Backend, error) {
 		return nil, fmt.Errorf("confstruct: file backend %q: %w", path, err)
 	}
 
+	b.path = path
 	b.values = values
 	return b, nil
 }
 
 type fileBackend struct {
+	path   string
 	format fileFormat
 	values map[string]any
+}
+
+const FileBackendName = "file"
+
+func (f *fileBackend) Name() string { return FileBackendName }
+
+func (f *fileBackend) Describe() string {
+	return f.path + ", " + f.formatString()
+}
+
+func (f *fileBackend) formatString() string {
+	switch f.format {
+	case fileFormatYAML:
+		return "yaml"
+	case fileFormatJSON:
+		return "json"
+	case fileFormatTOML:
+		return "toml"
+	default:
+		return "unknown"
+	}
 }
 
 func (f *fileBackend) Lookup(path string) (any, bool, error) {
