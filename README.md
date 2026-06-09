@@ -224,7 +224,7 @@ type Backend interface {
 
 The `bool` return value distinguishes "this backend has a value of zero" from "this backend has no value at all", preserving the set/unset distinction at the source level.
 
-`Name` returns the backend type identifier — a stable string suitable for logging and metrics. `Describe` returns instance-specific detail (source path, prefix, key count, etc.) and may return an empty string if there is nothing meaningful to add. The built-in backends expose their names as exported constants (`MapBackendName`, `EnvBackendName`, `FileBackendName`) so callers can compare against them without hard-coding strings.
+`Name` returns the backend type identifier — a stable string suitable for logging and metrics. `Describe` returns instance-specific detail (source path, prefix, key count, etc.) and may return an empty string if there is nothing meaningful to add. The built-in backends expose their names as exported constants (`MapBackendName`, `OverrideBackendName`, `EnvBackendName`, `FileBackendName`) so callers can compare against them without hard-coding strings.
 
 ### Watchable backends
 
@@ -244,7 +244,7 @@ The context passed to `Populate` governs the lifetime of all watchers. When it i
 
 Backends have no knowledge of the target struct type. The entry type handles coercion of the returned `any` value into the correct Go type, allowing numeric conversions (e.g., `int64` from a backend filling an `Int32Entry`). Coercion failures on hook calls are silently ignored — the entry retains its previous value.
 
-**Backends are never exposed to the caller.** Once registered via `AddLayer`, a backend is an internal detail. The caller only ever interacts with the struct.
+For ordinary configuration reads, backends are not exposed to the caller. Once registered via `AddLayer`, they are internal details and the caller reads config through the struct. `Override` is the deliberate write-side exception: user code keeps its handle only to push or remove overrides.
 
 ## Built-in backends
 
@@ -261,6 +261,26 @@ cfg.AddLayer(confstruct.Map(map[string]any{
 ```
 
 Keys are dot-separated field paths matching the struct layout. Values must be of a type compatible with the target entry — exact match, or any numeric type (conversions are handled automatically).
+
+### Override
+
+`Override` is a writable watchable backend for user-supplied overrides. Register it as a high-precedence layer, keep the returned backend handle, and call `Set` or `Unset` when user code wants to override a field or drop back to lower layers. Reads still go through the populated struct; the backend handle is only for write-side override control.
+
+```go
+overrides := confstruct.Override(nil)
+
+cfg.AddLayer(confstruct.Map(defaultValues))
+cfg.AddLayer(overrides)
+
+if err := confstruct.Populate(ctx, &cfg); err != nil {
+    log.Fatal(err)
+}
+
+overrides.Set("ListenAddr", "127.0.0.1:8081")
+overrides.Unset("ListenAddr")
+```
+
+Because `Override` is watchable, it must not be the lowest-priority layer. `Set` triggers immediate re-resolution with the user-supplied value. `Unset` removes the override and lets the next-lower layer win again.
 
 ### MapFromTags
 
