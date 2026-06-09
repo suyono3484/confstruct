@@ -12,6 +12,63 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package confstruct is a struct-first Go configuration library.
+//
+// The central rule: the struct is the config. Each leaf field is a typed entry —
+// a live, thread-safe value populated from one or more [Backend] implementations
+// and resolved to the highest-precedence winner. There is no global key-value
+// store and no unmarshaling step; the struct is the only interface callers use.
+//
+// # Quickstart
+//
+//	type Config struct {
+//	    confstruct.Meta             // embeds AddLayer and Populate machinery
+//	    Host confstruct.StringEntry
+//	    Port confstruct.IntEntry
+//	    DB   struct {
+//	        Name confstruct.StringEntry
+//	    }
+//	}
+//
+//	var cfg Config
+//
+//	// Lowest-priority layer: hard-coded defaults. Must be a static backend.
+//	cfg.AddLayer(confstruct.Primitive(map[string]any{
+//	    "Host":    "localhost",
+//	    "Port":    8080,
+//	    "DB.Name": "myapp",
+//	}))
+//
+//	// Higher-priority layer: env vars (APP_HOST, APP_PORT, APP_DB_NAME, …).
+//	env, _ := confstruct.Env(confstruct.WithPrefix("APP"))
+//	cfg.AddLayer(env)
+//
+//	// Populate reads all backends once and registers watchers for live updates.
+//	if err := confstruct.Populate(ctx, &cfg); err != nil {
+//	    log.Fatal(err)
+//	}
+//
+//	fmt.Println(cfg.Host.Value())  // "localhost" (or whatever a higher layer set)
+//	fmt.Println(cfg.Port.IsSet()) // true
+//
+// # Field paths
+//
+// Backends receive field paths as dot-separated chains of Go struct field names:
+// "Host", "DB.Name", "DB.Pool.Max". The path is derived from the Go field names
+// in the struct definition, not from any struct tag.
+//
+// # Layering
+//
+// Layers are registered in ascending precedence order via [Meta.AddLayer].
+// The first layer added is the lowest-priority source and must not be a
+// [WatchableBackend]. When a [WatchableBackend] pushes an update, the entry
+// re-resolves across all layers immediately; removing a key causes the entry to
+// fall back to the next-lower layer automatically.
+//
+// # Thread safety
+//
+// Each entry is guarded by its own [sync.RWMutex]. Remote backends may push
+// updates from any goroutine without racing against concurrent reads.
 package confstruct
 
 import (
@@ -179,22 +236,46 @@ func (e *entry[T]) SourceDesc() string {
 	return e.resolvedDesc
 }
 
+// IntEntry is a configuration entry whose resolved value is an int.
 type IntEntry struct{ entry[int] }
+
+// Int8Entry is a configuration entry whose resolved value is an int8.
 type Int8Entry struct{ entry[int8] }
+
+// Int16Entry is a configuration entry whose resolved value is an int16.
 type Int16Entry struct{ entry[int16] }
+
+// Int32Entry is a configuration entry whose resolved value is an int32.
 type Int32Entry struct{ entry[int32] }
+
+// Int64Entry is a configuration entry whose resolved value is an int64.
 type Int64Entry struct{ entry[int64] }
 
+// UintEntry is a configuration entry whose resolved value is a uint.
 type UintEntry struct{ entry[uint] }
+
+// Uint8Entry is a configuration entry whose resolved value is a uint8.
 type Uint8Entry struct{ entry[uint8] }
+
+// Uint16Entry is a configuration entry whose resolved value is a uint16.
 type Uint16Entry struct{ entry[uint16] }
+
+// Uint32Entry is a configuration entry whose resolved value is a uint32.
 type Uint32Entry struct{ entry[uint32] }
+
+// Uint64Entry is a configuration entry whose resolved value is a uint64.
 type Uint64Entry struct{ entry[uint64] }
 
+// Float32Entry is a configuration entry whose resolved value is a float32.
 type Float32Entry struct{ entry[float32] }
+
+// Float64Entry is a configuration entry whose resolved value is a float64.
 type Float64Entry struct{ entry[float64] }
 
+// StringEntry is a configuration entry whose resolved value is a string.
 type StringEntry struct{ entry[string] }
+
+// BoolEntry is a configuration entry whose resolved value is a bool.
 type BoolEntry struct{ entry[bool] }
 
 func coerce[T any](v any) (T, error) {

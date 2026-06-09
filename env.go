@@ -65,6 +65,8 @@ type envBackend struct {
 	dotEnv     map[string]string
 }
 
+// EnvBackendName is the Name() identifier for an [Env] backend.
+// Use it to compare against [ResolveHook] arguments without hard-coding the string.
 const EnvBackendName = "env"
 
 func (e *envBackend) Name() string { return EnvBackendName }

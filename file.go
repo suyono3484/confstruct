@@ -85,6 +85,8 @@ type fileBackend struct {
 	values map[string]any
 }
 
+// FileBackendName is the Name() identifier for a [File] backend.
+// Use it to compare against [ResolveHook] arguments without hard-coding the string.
 const FileBackendName = "file"
 
 func (f *fileBackend) Name() string { return FileBackendName }

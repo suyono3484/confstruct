@@ -33,6 +33,8 @@ type primitiveBackend struct {
 	values map[string]any
 }
 
+// PrimitiveBackendName is the Name() identifier for a [Primitive] backend.
+// Use it to compare against [ResolveHook] arguments without hard-coding the string.
 const PrimitiveBackendName = "primitive"
 
 func (p *primitiveBackend) Lookup(path string) (any, bool, error) {
