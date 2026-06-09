@@ -369,6 +369,63 @@ func Populate(ctx context.Context, cfgStruct any) error {
 	return walkAndInject(ctx, sv, meta, "")
 }
 
+// UnsetFields walks cfgStruct and returns the dot-separated paths of all entry
+// fields for which IsSet() is false, in struct field order. An empty slice means
+// every field has a value from at least one backend. Panics if cfgStruct is not a
+// pointer to a struct embedding confstruct.Meta.
+//
+// Typically called after Populate — before it, no backend has run and every field
+// will appear in the result. Useful for startup validation and as a test helper
+// that avoids hand-listing every field:
+//
+//	if unset := confstruct.UnsetFields(&cfg); len(unset) > 0 {
+//	    log.Fatalf("required config fields are not set: %v", unset)
+//	}
+func UnsetFields(cfgStruct any) []string {
+	rv := reflect.ValueOf(cfgStruct)
+	if rv.Kind() != reflect.Pointer || rv.Elem().Kind() != reflect.Struct {
+		panic("confstruct: UnsetFields requires a pointer to a struct")
+	}
+	sv := rv.Elem()
+	metaField := sv.FieldByName("Meta")
+	if !metaField.IsValid() || metaField.Type() != metaType {
+		panic("confstruct: struct must embed confstruct.Meta")
+	}
+	var unset []string
+	collectUnset(sv, "", &unset)
+	return unset
+}
+
+func collectUnset(sv reflect.Value, prefix string, unset *[]string) {
+	st := sv.Type()
+	for i := 0; i < st.NumField(); i++ {
+		f := st.Field(i)
+		fv := sv.Field(i)
+
+		if f.Type == metaType {
+			continue
+		}
+
+		key := f.Name
+		if prefix != "" {
+			key = prefix + "." + f.Name
+		}
+
+		if reflect.PointerTo(f.Type).Implements(layerManagerType) {
+			lm := fv.Addr().Interface().(layerManager)
+			_, _, _, isSet := lm.resolvedState()
+			if !isSet {
+				*unset = append(*unset, key)
+			}
+			continue
+		}
+
+		if f.Type.Kind() == reflect.Struct {
+			collectUnset(fv, key, unset)
+		}
+	}
+}
+
 func walkAndInject(ctx context.Context, sv reflect.Value, meta *Meta, prefix string) error {
 	st := sv.Type()
 	for i := 0; i < st.NumField(); i++ {

@@ -132,6 +132,42 @@ cfg.OnResolve(func(key string, value any, backendName, backendDesc string) {
 
 `OnResolve` must be called before `Populate`. Hooks registered after `Populate` returns will not receive the initial resolution callbacks.
 
+## Validation
+
+`UnsetFields` walks a config struct and returns the dot-separated paths of all entry fields for which `IsSet()` is false, in struct field order. An empty slice means every field has a value from at least one backend.
+
+```go
+func UnsetFields(cfgStruct any) []string
+```
+
+Call it after `Populate` to validate that every required field was covered:
+
+```go
+if err := confstruct.Populate(ctx, &cfg); err != nil {
+    log.Fatal(err)
+}
+if unset := confstruct.UnsetFields(&cfg); len(unset) > 0 {
+    log.Fatalf("required config fields are not set: %v", unset)
+}
+```
+
+`UnsetFields` is also useful in tests as a replacement for hand-listing every field. Instead of one assertion per field, a single loop covers the entire struct — including nested structs — automatically:
+
+```go
+func TestDefaultsAreComplete(t *testing.T) {
+    var cfg AppConfig
+    cfg.AddLayer(confstruct.Map(defaultValues))
+    if err := confstruct.Populate(context.Background(), &cfg); err != nil {
+        t.Fatal(err)
+    }
+    for _, path := range confstruct.UnsetFields(&cfg) {
+        t.Errorf("%s has no default value", path)
+    }
+}
+```
+
+`UnsetFields` panics if passed a non-pointer or a struct that does not embed `confstruct.Meta`.
+
 ## Layering and precedence
 
 There are no built-in or assumed layers. The caller registers each backend explicitly, in order. Each call to `AddLayer` appends a backend at a higher precedence than all previous ones.
@@ -147,7 +183,7 @@ cfg.AddLayer(cliFlags)   // highest precedence
 
 **confstruct is explicit by design.** It is the caller's responsibility to cover every entry in the config struct with a value in the lowest layer. If a field has no value in any layer, `Value()` silently returns the Go zero value and `IsSet()` returns `false` — there is no error. This is intentional: the library does not guess at defaults.
 
-**Recommended practice:** write a unit test that calls `Populate` with only the lowest layer registered and asserts that `IsSet()` is `true` for every entry field. This catches omissions before they reach production.
+**Recommended practice:** write a unit test that calls `Populate` with only the lowest layer registered and uses `UnsetFields` to catch any missing defaults. This catches omissions before they reach production without hand-listing every field.
 
 ```go
 func TestDefaultsAreComplete(t *testing.T) {
@@ -156,13 +192,9 @@ func TestDefaultsAreComplete(t *testing.T) {
     if err := confstruct.Populate(context.Background(), &cfg); err != nil {
         t.Fatal(err)
     }
-    if !cfg.ListenAddr.IsSet() {
-        t.Error("ListenAddr has no default")
+    for _, path := range confstruct.UnsetFields(&cfg) {
+        t.Errorf("%s has no default value in the Map layer", path)
     }
-    if !cfg.Database.Host.IsSet() {
-        t.Error("Database.Host has no default")
-    }
-    // ... one assertion per entry field
 }
 ```
 
@@ -246,7 +278,7 @@ cfg.AddLayer(confstruct.MapFromTags(&cfg, "default"))
 
 Values are always strings; confstruct coerces them into the target entry type using the same rules as the Env backend — numeric parsing, boolean parsing, and so on. `MapFromTags` panics if passed a non-pointer or non-struct.
 
-**Test your tags.** Tag parsing produces no runtime signal on a missing or misspelled tag — a typo silently yields an unset entry. Write a unit test that registers only the `MapFromTags` backend and asserts `IsSet()` for every field that should be covered:
+**Test your tags.** Tag parsing produces no runtime signal on a missing or misspelled tag — a typo silently yields an unset entry. Write a unit test that registers only the `MapFromTags` backend and uses `UnsetFields` to catch any missing tags:
 
 ```go
 func TestTagDefaultsAreComplete(t *testing.T) {
@@ -255,10 +287,9 @@ func TestTagDefaultsAreComplete(t *testing.T) {
     if err := confstruct.Populate(context.Background(), &cfg); err != nil {
         t.Fatal(err)
     }
-    if !cfg.Server.Host.IsSet() {
-        t.Error("Server.Host has no cs.default tag")
+    for _, path := range confstruct.UnsetFields(&cfg) {
+        t.Errorf("%s has no cs.default tag or its value failed to parse", path)
     }
-    // ... one assertion per tagged entry field
 }
 ```
 
