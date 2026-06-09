@@ -201,11 +201,11 @@ INLINE_COMMENT=value # this is a comment
 	}
 }
 
-func TestEnv_layeredWithPrimitive(t *testing.T) {
+func TestEnv_layeredWithMap(t *testing.T) {
 	t.Setenv("NAME", "from-env")
 
 	var cfg testConfig
-	cfg.AddLayer(Primitive(map[string]any{
+	cfg.AddLayer(Map(map[string]any{
 		"Name": "default",
 		"Port": 3000,
 	}))
@@ -222,7 +222,7 @@ func TestEnv_layeredWithPrimitive(t *testing.T) {
 		t.Errorf("Name: got %q, want %q (env layer should win)", cfg.Name.Value(), "from-env")
 	}
 	if cfg.Port.Value() != 3000 {
-		t.Errorf("Port: got %d, want 3000 (primitive fallback)", cfg.Port.Value())
+		t.Errorf("Port: got %d, want 3000 (map fallback)", cfg.Port.Value())
 	}
 }
 

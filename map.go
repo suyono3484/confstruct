@@ -19,31 +19,31 @@ import (
 	"maps"
 )
 
-// Primitive returns a Backend backed by the given key-value map.
+// Map returns a Backend backed by the given key-value map.
 // Keys must be dot-separated field paths matching the config struct layout.
 // Register it first via AddLayer to act as a defaults layer; register it last
 // to act as an override layer.
-func Primitive(values map[string]any) Backend {
+func Map(values map[string]any) Backend {
 	m := make(map[string]any, len(values))
 	maps.Copy(m, values)
-	return &primitiveBackend{values: m}
+	return &mapBackend{values: m}
 }
 
-type primitiveBackend struct {
+type mapBackend struct {
 	values map[string]any
 }
 
-// PrimitiveBackendName is the Name() identifier for a [Primitive] backend.
+// MapBackendName is the Name() identifier for a [Map] backend.
 // Use it to compare against [ResolveHook] arguments without hard-coding the string.
-const PrimitiveBackendName = "primitive"
+const MapBackendName = "map"
 
-func (p *primitiveBackend) Lookup(path string) (any, bool, error) {
+func (p *mapBackend) Lookup(path string) (any, bool, error) {
 	v, ok := p.values[path]
 	return v, ok, nil
 }
 
-func (p *primitiveBackend) Name() string { return PrimitiveBackendName }
+func (p *mapBackend) Name() string { return MapBackendName }
 
-func (p *primitiveBackend) Describe() string {
+func (p *mapBackend) Describe() string {
 	return fmt.Sprintf("%d keys", len(p.values))
 }

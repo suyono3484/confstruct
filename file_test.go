@@ -264,8 +264,8 @@ func TestFile_Populate_TOML(t *testing.T) {
 	}
 }
 
-func TestFile_LayeredWithPrimitive(t *testing.T) {
-	// File provides defaults; Primitive overrides one field.
+func TestFile_LayeredWithMap(t *testing.T) {
+	// File provides defaults; Map overrides one field.
 	type Config struct {
 		Meta
 		Host StringEntry
@@ -275,7 +275,7 @@ func TestFile_LayeredWithPrimitive(t *testing.T) {
 	b := mustFileBackend(t, "config.yaml", "host: file.example.com\nport: 3000\n")
 	var cfg Config
 	cfg.AddLayer(b)
-	cfg.AddLayer(Primitive(map[string]any{"Port": 4000}))
+	cfg.AddLayer(Map(map[string]any{"Port": 4000}))
 	if err := Populate(context.Background(), &cfg); err != nil {
 		t.Fatalf("Populate: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestFile_LayeredWithPrimitive(t *testing.T) {
 		t.Errorf("Host: got %q; want file.example.com", got)
 	}
 	if got := cfg.Port.Value(); got != 4000 {
-		t.Errorf("Port: got %d; want 4000 (Primitive override)", got)
+		t.Errorf("Port: got %d; want 4000 (Map override)", got)
 	}
 }
 

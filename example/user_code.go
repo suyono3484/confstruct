@@ -18,9 +18,9 @@
 //
 // Layers, in ascending precedence order:
 //
-//  1. Primitive — hard-coded application defaults (always present).
-//  2. File      — config.yaml in the current directory (optional; skipped if absent).
-//  3. Env       — .env file and APP_-prefixed environment variables (highest priority).
+//  1. Map  — hard-coded application defaults (always present).
+//  2. File — config.yaml in the current directory (optional; skipped if absent).
+//  3. Env  — .env file and APP_-prefixed environment variables (highest priority).
 //
 // Example config.yaml:
 //
@@ -84,9 +84,9 @@ type AppConfig struct {
 func main() {
 	var cfg AppConfig
 
-	// Layer 1 — Primitive: hard-coded application defaults (lowest priority).
+	// Layer 1 — Map: hard-coded application defaults (lowest priority).
 	// Every key is the dot-separated struct field path.
-	cfg.AddLayer(cs.Primitive(map[string]any{
+	cfg.AddLayer(cs.Map(map[string]any{
 		"Server.Host":           "0.0.0.0",
 		"Server.Port":           8080,
 		"Server.MaxConnections": 1000,

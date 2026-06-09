@@ -48,7 +48,7 @@ type Config struct {
 var cfg Config
 
 // Layer 1 — hard-coded defaults (lowest priority, must be a static backend).
-cfg.AddLayer(confstruct.Primitive(map[string]any{
+cfg.AddLayer(confstruct.Map(map[string]any{
     "ListenAddr":    "localhost:8080",
     "Database.User": "app",
     "Database.Host": "localhost",
@@ -152,7 +152,7 @@ cfg.AddLayer(cliFlags)   // highest precedence
 ```go
 func TestDefaultsAreComplete(t *testing.T) {
     var cfg AppConfig
-    cfg.AddLayer(confstruct.Primitive(defaultValues))
+    cfg.AddLayer(confstruct.Map(defaultValues))
     if err := confstruct.Populate(context.Background(), &cfg); err != nil {
         t.Fatal(err)
     }
@@ -192,7 +192,7 @@ type Backend interface {
 
 The `bool` return value distinguishes "this backend has a value of zero" from "this backend has no value at all", preserving the set/unset distinction at the source level.
 
-`Name` returns the backend type identifier — a stable string suitable for logging and metrics. `Describe` returns instance-specific detail (source path, prefix, key count, etc.) and may return an empty string if there is nothing meaningful to add. The built-in backends expose their names as exported constants (`PrimitiveBackendName`, `EnvBackendName`, `FileBackendName`) so callers can compare against them without hard-coding strings.
+`Name` returns the backend type identifier — a stable string suitable for logging and metrics. `Describe` returns instance-specific detail (source path, prefix, key count, etc.) and may return an empty string if there is nothing meaningful to add. The built-in backends expose their names as exported constants (`MapBackendName`, `EnvBackendName`, `FileBackendName`) so callers can compare against them without hard-coding strings.
 
 ### Watchable backends
 
@@ -216,12 +216,12 @@ Backends have no knowledge of the target struct type. The entry type handles coe
 
 ## Built-in backends
 
-### Primitive
+### Map
 
-`Primitive` is a map-backed backend for literal Go values. It is useful as a defaults layer (registered first) or a forced-override layer (registered last). It is a static backend and satisfies the lowest-priority constraint.
+`Map` is a map-backed backend for literal Go values. It is useful as a defaults layer (registered first) or a forced-override layer (registered last). It is a static backend and satisfies the lowest-priority constraint.
 
 ```go
-cfg.AddLayer(confstruct.Primitive(map[string]any{
+cfg.AddLayer(confstruct.Map(map[string]any{
     "ListenAddr":    "localhost:8080",
     "Database.Host": "localhost",
     "Database.Port": 5432,

@@ -23,7 +23,7 @@ import (
 	cs "github.com/suyono3484/confstruct"
 )
 
-// defaultValues mirrors the Primitive map in main(). Keeping it as a package-level
+// defaultValues mirrors the Map backend in main(). Keeping it as a package-level
 // variable lets both main() and the test reference the same set of defaults,
 // so adding a new struct field forces a single update in one place.
 var defaultValues = map[string]any{
@@ -44,11 +44,11 @@ var defaultValues = map[string]any{
 }
 
 // TestDefaultsAreComplete verifies that every entry with a safe default is
-// covered by the lowest layer. Register only the Primitive backend so that
+// covered by the lowest layer. Register only the Map backend so that
 // higher-priority sources (file, env) cannot mask a missing default.
 func TestDefaultsAreComplete(t *testing.T) {
 	var cfg AppConfig
-	cfg.AddLayer(cs.Primitive(defaultValues))
+	cfg.AddLayer(cs.Map(defaultValues))
 	if err := cs.Populate(context.Background(), &cfg); err != nil {
 		t.Fatal(err)
 	}

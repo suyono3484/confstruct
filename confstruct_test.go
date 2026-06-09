@@ -32,7 +32,7 @@ type testConfig struct {
 
 func TestPopulate_singleLayer(t *testing.T) {
 	var cfg testConfig
-	cfg.AddLayer(Primitive(map[string]any{
+	cfg.AddLayer(Map(map[string]any{
 		"Name":          "myapp",
 		"Port":          8080,
 		"Debug":         true,
@@ -67,7 +67,7 @@ func TestPopulate_singleLayer(t *testing.T) {
 
 func TestPopulate_unsetFields(t *testing.T) {
 	var cfg testConfig
-	cfg.AddLayer(Primitive(map[string]any{
+	cfg.AddLayer(Map(map[string]any{
 		"Name": "myapp",
 	}))
 	if err := Populate(context.Background(), &cfg); err != nil {
@@ -87,11 +87,11 @@ func TestPopulate_unsetFields(t *testing.T) {
 
 func TestPopulate_layerPrecedence(t *testing.T) {
 	var cfg testConfig
-	cfg.AddLayer(Primitive(map[string]any{
+	cfg.AddLayer(Map(map[string]any{
 		"Name": "default",
 		"Port": 3000,
 	}))
-	cfg.AddLayer(Primitive(map[string]any{
+	cfg.AddLayer(Map(map[string]any{
 		"Name": "override",
 	}))
 	if err := Populate(context.Background(), &cfg); err != nil {
@@ -115,7 +115,7 @@ func TestPopulate_noLayers(t *testing.T) {
 
 func TestPopulate_numericCoercion(t *testing.T) {
 	var cfg testConfig
-	cfg.AddLayer(Primitive(map[string]any{
+	cfg.AddLayer(Map(map[string]any{
 		"Port":          int64(9090),
 		"Database.Port": int(5432),
 	}))
@@ -133,7 +133,7 @@ func TestPopulate_numericCoercion(t *testing.T) {
 
 func TestPopulate_typeMismatchSilent(t *testing.T) {
 	var cfg testConfig
-	cfg.AddLayer(Primitive(map[string]any{
+	cfg.AddLayer(Map(map[string]any{
 		"Name": 123, // int into StringEntry — mismatch
 	}))
 	if err := Populate(context.Background(), &cfg); err != nil {
@@ -162,7 +162,7 @@ func TestPopulate_requiresMeta(t *testing.T) {
 
 func TestPopulate_calledTwice(t *testing.T) {
 	var cfg testConfig
-	cfg.AddLayer(Primitive(map[string]any{"Name": "first"}))
+	cfg.AddLayer(Map(map[string]any{"Name": "first"}))
 	if err := Populate(context.Background(), &cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestPopulate_watchableAsLowestLayer(t *testing.T) {
 func TestPopulate_watchableUpdate(t *testing.T) {
 	var cfg testConfig
 	w := &fakeWatchable{values: map[string]any{"Name": "remote"}}
-	cfg.AddLayer(Primitive(map[string]any{"Name": "default", "Port": 8080}))
+	cfg.AddLayer(Map(map[string]any{"Name": "default", "Port": 8080}))
 	cfg.AddLayer(w)
 	if err := Populate(context.Background(), &cfg); err != nil {
 		t.Fatal(err)
@@ -199,7 +199,7 @@ func TestPopulate_watchableUpdate(t *testing.T) {
 		t.Errorf("Name after update: got %q, want %q", cfg.Name.Value(), "updated")
 	}
 
-	// simulate key removal — lower layer (Primitive) takes over
+	// simulate key removal — lower layer (Map) takes over
 	w.trigger("Name", nil, false)
 
 	if !cfg.Name.IsSet() {

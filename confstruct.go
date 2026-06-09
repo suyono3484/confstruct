@@ -33,7 +33,7 @@
 //	var cfg Config
 //
 //	// Lowest-priority layer: hard-coded defaults. Must be a static backend.
-//	cfg.AddLayer(confstruct.Primitive(map[string]any{
+//	cfg.AddLayer(confstruct.Map(map[string]any{
 //	    "Host":    "localhost",
 //	    "Port":    8080,
 //	    "DB.Name": "myapp",
