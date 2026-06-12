@@ -18,6 +18,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -209,6 +210,108 @@ workers: 4
 	}
 	if got := cfg.Workers.Value(); got != 4 {
 		t.Errorf("Workers: got %d; want 4", got)
+	}
+}
+
+func TestFile_Populate_SegmentAlias(t *testing.T) {
+	content := `
+db:
+  hostname: aliased.example.com
+`
+	type Config struct {
+		Meta
+		Database struct {
+			Host StringEntry `cs.file.segment-alias:"hostname"`
+		} `cs.file.segment-alias:"db"`
+	}
+
+	b := mustFileBackend(t, "config.yaml", content)
+	var cfg Config
+	cfg.AddLayer(b)
+	if err := Populate(context.Background(), &cfg); err != nil {
+		t.Fatalf("Populate: %v", err)
+	}
+
+	if !cfg.Database.Host.IsSet() {
+		t.Fatal("Database.Host: want IsSet() = true")
+	}
+	if got := cfg.Database.Host.Value(); got != "aliased.example.com" {
+		t.Errorf("Database.Host: got %q; want aliased.example.com", got)
+	}
+}
+
+func TestFile_Populate_SegmentAliasFallbackToFieldName(t *testing.T) {
+	content := `
+database:
+  host: canonical.example.com
+`
+	type Config struct {
+		Meta
+		Database struct {
+			Host StringEntry `cs.file.segment-alias:"hostname"`
+		} `cs.file.segment-alias:"db"`
+	}
+
+	b := mustFileBackend(t, "config.yaml", content)
+	var cfg Config
+	cfg.AddLayer(b)
+	if err := Populate(context.Background(), &cfg); err != nil {
+		t.Fatalf("Populate: %v", err)
+	}
+
+	if got := cfg.Database.Host.Value(); got != "canonical.example.com" {
+		t.Errorf("Database.Host: got %q; want canonical.example.com", got)
+	}
+}
+
+func TestFile_Populate_SegmentAliasConflictOnParentSegment(t *testing.T) {
+	content := `
+database:
+  host: canonical.example.com
+db:
+  hostname: aliased.example.com
+`
+	type Config struct {
+		Meta
+		Database struct {
+			Host StringEntry `cs.file.segment-alias:"hostname"`
+		} `cs.file.segment-alias:"db"`
+	}
+
+	b := mustFileBackend(t, "config.yaml", content)
+	var cfg Config
+	cfg.AddLayer(b)
+	err := Populate(context.Background(), &cfg)
+	if err == nil {
+		t.Fatal("Populate: expected conflict error, got nil")
+	}
+	if got := err.Error(); got == "" || !strings.Contains(got, `both "Database" and alias "db" are present`) {
+		t.Fatalf("Populate: got error %q; want parent segment conflict", got)
+	}
+}
+
+func TestFile_Populate_SegmentAliasConflictOnLeafSegment(t *testing.T) {
+	content := `
+database:
+  host: canonical.example.com
+  hostname: aliased.example.com
+`
+	type Config struct {
+		Meta
+		Database struct {
+			Host StringEntry `cs.file.segment-alias:"hostname"`
+		}
+	}
+
+	b := mustFileBackend(t, "config.yaml", content)
+	var cfg Config
+	cfg.AddLayer(b)
+	err := Populate(context.Background(), &cfg)
+	if err == nil {
+		t.Fatal("Populate: expected conflict error, got nil")
+	}
+	if got := err.Error(); got == "" || !strings.Contains(got, `both "Host" and alias "hostname" are present`) {
+		t.Fatalf("Populate: got error %q; want leaf segment conflict", got)
 	}
 }
 

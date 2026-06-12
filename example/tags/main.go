@@ -29,7 +29,7 @@
 //
 //	server:
 //	  port: 9090
-//	database:
+//	db:
 //	  host: postgres.internal
 //	  name: production
 //	  user: appuser
@@ -74,12 +74,33 @@ type CacheConfig struct {
 }
 
 // AppConfig is the top-level configuration struct.
+//
+// YAML shape:
+//
+//	server:
+//	  host: 0.0.0.0
+//	  port: 8080
+//	  max_connections: 1000
+//	database:
+//	  host: localhost
+//	  port: 5432
+//	  name: myapp
+//	  user: postgres
+//	cache:
+//	  host: localhost
+//	  port: 6379
+//	  ttl: 300
+//	debug: false
+//
+// File backend note: Database may also be written as "db" because the field
+// below carries `cs.file.segment-alias:"db"`.
+//
 // Embedding cs.Meta wires up AddLayer and the Populate machinery.
 type AppConfig struct {
 	cs.Meta
 
 	Server   ServerConfig
-	Database DatabaseConfig
+	Database DatabaseConfig `cs.file.segment-alias:"db"`
 	Cache    CacheConfig
 	Debug    cs.BoolEntry `cs.default:"false"`
 }
@@ -94,8 +115,8 @@ func main() {
 
 	// Layer 2 — File: config.yaml in the current directory (optional).
 	// Nested YAML keys map case-insensitively to struct field paths:
-	//   database.host → Database.Host
-	//   server.port   → Server.Port
+	//   db.host     → Database.Host  (via cs.file.segment-alias)
+	//   server.port → Server.Port
 	if fileBackend, err := cs.File("config.yaml"); err == nil {
 		cfg.AddLayer(fileBackend)
 	} else if !errors.Is(err, os.ErrNotExist) {

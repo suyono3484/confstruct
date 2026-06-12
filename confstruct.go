@@ -53,9 +53,11 @@
 //
 // # Field paths
 //
-// Backends receive field paths as dot-separated chains of Go struct field names:
-// "Host", "DB.Name", "DB.Pool.Max". The path is derived from the Go field names
-// in the struct definition, not from any struct tag.
+// Backends receive canonical field paths as dot-separated chains of Go struct
+// field names: "Host", "DB.Name", "DB.Pool.Max". The path is derived from the
+// Go field names in the struct definition. Some built-in backends may
+// additionally consult struct tags while resolving their own source-specific
+// keys; for example, the File backend recognizes `cs.file.segment-alias`.
 //
 // # Layering
 //
@@ -116,6 +118,10 @@ var (
 	layerManagerType = reflect.TypeFor[layerManager]()
 	metaType         = reflect.TypeFor[Meta]()
 )
+
+type fieldAwareBackend interface {
+	lookupField(path string, fields []reflect.StructField) (any, bool, error)
+}
 
 // Meta holds globally registered backends. Embedding it in a config struct
 // promotes AddLayer and OnResolve onto the struct directly.
@@ -366,7 +372,7 @@ func Populate(ctx context.Context, cfgStruct any) error {
 		return fmt.Errorf("confstruct: lowest-priority backend must not be a WatchableBackend")
 	}
 
-	return walkAndInject(ctx, sv, meta, "")
+	return walkAndInject(ctx, sv, meta, "", nil)
 }
 
 // UnsetFields walks cfgStruct and returns the dot-separated paths of all entry
@@ -426,7 +432,7 @@ func collectUnset(sv reflect.Value, prefix string, unset *[]string) {
 	}
 }
 
-func walkAndInject(ctx context.Context, sv reflect.Value, meta *Meta, prefix string) error {
+func walkAndInject(ctx context.Context, sv reflect.Value, meta *Meta, prefix string, chain []reflect.StructField) error {
 	st := sv.Type()
 	for i := 0; i < st.NumField(); i++ {
 		f := st.Field(i)
@@ -440,6 +446,7 @@ func walkAndInject(ctx context.Context, sv reflect.Value, meta *Meta, prefix str
 		if prefix != "" {
 			key = prefix + "." + f.Name
 		}
+		fieldChain := appendFieldChain(chain, f)
 
 		if reflect.PointerTo(f.Type).Implements(layerManagerType) {
 			lm := fv.Addr().Interface().(layerManager)
@@ -458,9 +465,9 @@ func walkAndInject(ctx context.Context, sv reflect.Value, meta *Meta, prefix str
 			}
 			for idx, b := range meta.backends {
 				lm.initSlotMeta(idx, b.Name(), b.Describe())
-				v, ok, err := b.Lookup(key)
+				v, ok, err := lookupBackendValue(b, key, fieldChain)
 				if err != nil {
-					ok = false
+					return fmt.Errorf("confstruct: backend %q lookup %q: %w", b.Name(), key, err)
 				}
 				lm.setSlot(idx, v, ok)
 				if wb, watchable := b.(WatchableBackend); watchable {
@@ -475,10 +482,24 @@ func walkAndInject(ctx context.Context, sv reflect.Value, meta *Meta, prefix str
 		}
 
 		if f.Type.Kind() == reflect.Struct {
-			if err := walkAndInject(ctx, fv, meta, key); err != nil {
+			if err := walkAndInject(ctx, fv, meta, key, fieldChain); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+func appendFieldChain(chain []reflect.StructField, field reflect.StructField) []reflect.StructField {
+	next := make([]reflect.StructField, len(chain)+1)
+	copy(next, chain)
+	next[len(chain)] = field
+	return next
+}
+
+func lookupBackendValue(b Backend, path string, fields []reflect.StructField) (any, bool, error) {
+	if fb, ok := b.(fieldAwareBackend); ok {
+		return fb.lookupField(path, fields)
+	}
+	return b.Lookup(path)
 }

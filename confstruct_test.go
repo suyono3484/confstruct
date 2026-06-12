@@ -16,6 +16,8 @@ package confstruct
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 )
 
@@ -179,6 +181,18 @@ func TestPopulate_watchableAsLowestLayer(t *testing.T) {
 	}
 }
 
+func TestPopulate_lookupError(t *testing.T) {
+	var cfg testConfig
+	cfg.AddLayer(errBackend{err: errors.New("boom")})
+	err := Populate(context.Background(), &cfg)
+	if err == nil {
+		t.Fatal("expected error when backend Lookup fails")
+	}
+	if !strings.Contains(err.Error(), `backend "err" lookup "Name"`) {
+		t.Fatalf("Populate: got error %q; want backend lookup context", err)
+	}
+}
+
 func TestPopulate_watchableUpdate(t *testing.T) {
 	var cfg testConfig
 	w := &fakeWatchable{values: map[string]any{"Name": "remote"}}
@@ -215,6 +229,20 @@ type fakeWatchable struct {
 	values map[string]any
 	hooks  map[string]func(any, bool)
 }
+
+type errBackend struct {
+	err error
+}
+
+func (e errBackend) Lookup(path string) (any, bool, error) {
+	if path == "Name" {
+		return nil, false, e.err
+	}
+	return nil, false, nil
+}
+
+func (e errBackend) Name() string     { return "err" }
+func (e errBackend) Describe() string { return "" }
 
 func (f *fakeWatchable) Lookup(path string) (any, bool, error) {
 	v, ok := f.values[path]

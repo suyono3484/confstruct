@@ -19,11 +19,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
 )
+
+const fileSegmentAliasTag = "cs.file.segment-alias"
 
 type fileFormat int
 
@@ -49,8 +52,11 @@ func WithFormat(format string) FileOption {
 // file. The format is inferred from the file extension (.yaml, .yml, .json,
 // .toml); use WithFormat to override. Nested struct paths map to nested file
 // keys via case-insensitive matching: Lookup("Database.Host") matches
-// database.host or DATABASE.HOST in the file. The file is read once at
-// construction time.
+// database.host or DATABASE.HOST in the file. During Populate, any struct field
+// tagged with `cs.file.segment-alias:"..."` may also be matched by that alias
+// segment, so Database.Host can resolve from db.host. If both the canonical and
+// aliased segment are present at the same level, Populate fails with a conflict
+// error. The file is read once at construction time.
 func File(path string, opts ...FileOption) (Backend, error) {
 	b := &fileBackend{}
 	for _, o := range opts {
@@ -112,27 +118,84 @@ func (f *fileBackend) Lookup(path string) (any, bool, error) {
 	return lookupNested(f.values, strings.Split(path, "."))
 }
 
+func (f *fileBackend) lookupField(path string, fields []reflect.StructField) (any, bool, error) {
+	if len(fields) == 0 {
+		return f.Lookup(path)
+	}
+	return f.lookupFieldRecursive(path, f.values, fields, 0)
+}
+
 // lookupNested navigates a nested map[string]any using case-insensitive key
 // matching at each level.
 func lookupNested(m map[string]any, parts []string) (any, bool, error) {
 	if len(parts) == 0 || m == nil {
 		return nil, false, nil
 	}
-	target := strings.ToLower(parts[0])
-	for k, v := range m {
-		if strings.ToLower(k) != target {
-			continue
-		}
-		if len(parts) == 1 {
-			return v, true, nil
-		}
-		nested, ok := v.(map[string]any)
-		if !ok {
-			return nil, false, nil
-		}
-		return lookupNested(nested, parts[1:])
+	v, ok := lookupCaseInsensitive(m, parts[0])
+	if !ok {
+		return nil, false, nil
 	}
-	return nil, false, nil
+	if len(parts) == 1 {
+		return v, true, nil
+	}
+	nested, ok := v.(map[string]any)
+	if !ok {
+		return nil, false, nil
+	}
+	return lookupNested(nested, parts[1:])
+}
+
+func (f *fileBackend) lookupFieldRecursive(path string, m map[string]any, fields []reflect.StructField, index int) (any, bool, error) {
+	if len(fields) == 0 || m == nil || index >= len(fields) {
+		return nil, false, nil
+	}
+	field := fields[index]
+	alias, hasAlias := fileSegmentAlias(field)
+	canonicalValue, canonicalOK := lookupCaseInsensitive(m, field.Name)
+	aliasValue, aliasOK := any(nil), false
+	if hasAlias {
+		aliasValue, aliasOK = lookupCaseInsensitive(m, alias)
+	}
+	if hasAlias && canonicalOK && aliasOK {
+		return nil, false, fmt.Errorf("conflicting file keys for %q: both %q and alias %q are present", path, field.Name, alias)
+	}
+	v, ok := canonicalValue, canonicalOK
+	if aliasOK {
+		v, ok = aliasValue, true
+	}
+	if !ok {
+		return nil, false, nil
+	}
+	if index == len(fields)-1 {
+		return v, true, nil
+	}
+	nested, ok := v.(map[string]any)
+	if !ok {
+		return nil, false, nil
+	}
+	return f.lookupFieldRecursive(path, nested, fields, index+1)
+}
+
+func lookupCaseInsensitive(m map[string]any, target string) (any, bool) {
+	target = strings.ToLower(target)
+	for k, v := range m {
+		if strings.ToLower(k) == target {
+			return v, true
+		}
+	}
+	return nil, false
+}
+
+func fileSegmentAlias(field reflect.StructField) (string, bool) {
+	alias, ok := field.Tag.Lookup(fileSegmentAliasTag)
+	if !ok {
+		return "", false
+	}
+	alias = strings.TrimSpace(alias)
+	if alias == "" || strings.EqualFold(alias, field.Name) {
+		return "", false
+	}
+	return alias, true
 }
 
 func parseFileFormat(s string) fileFormat {

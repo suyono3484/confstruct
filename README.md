@@ -214,13 +214,15 @@ type Backend interface {
 }
 ```
 
-`Lookup` is called once per field during `Populate` and returns the value, a presence flag, and an error. The path is built from the chain of Go struct field names leading to the entry:
+`Lookup` is called once per field during `Populate` and returns the value, a presence flag, and an error. If `Lookup` returns an error, `Populate` fails. The canonical path is built from the chain of Go struct field names leading to the entry:
 
 ```
 "ListenAddr"        // top-level field
 "Database.User"     // nested struct field
 "Database.Pool.Max" // doubly nested struct field
 ```
+
+Some built-in backends may also consult backend-specific struct tags while resolving their own source keys. For example, the File backend recognizes `cs.file.segment-alias`.
 
 The `bool` return value distinguishes "this backend has a value of zero" from "this backend has no value at all", preserving the set/unset distinction at the source level.
 
@@ -341,9 +343,22 @@ backend, err := confstruct.File("config.cfg", confstruct.WithFormat("toml"))
 
 Nested struct paths map to nested file keys via case-insensitive matching at each level. `Lookup("Database.Host")` matches any of `database.host`, `DATABASE.HOST`, or `Database.Host` in the file.
 
+During `Populate`, the File backend also recognizes `cs.file.segment-alias` on struct fields. The tag key formula matches `MapFromTags`: `cs.` followed by a backend-specific name, so File uses `cs.file.segment-alias`.
+
+```go
+type Config struct {
+    confstruct.Meta
+    Database struct {
+        Host confstruct.StringEntry
+    } `cs.file.segment-alias:"db"`
+}
+```
+
+With that tag in place, `Database.Host` can resolve from either `database.host` or `db.host`. If both the canonical and aliased segment are present at the same level, `Populate` fails with a conflict error rather than mixing the two branches.
+
 ```yaml
 # config.yaml
-database:
+db:
   host: localhost
   port: 5432
 ```
