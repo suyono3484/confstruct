@@ -17,8 +17,10 @@ package confstruct
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 type testConfig struct {
@@ -133,6 +135,182 @@ func TestPopulate_numericCoercion(t *testing.T) {
 	}
 }
 
+func TestPopulate_numericOverflowRejected(t *testing.T) {
+	type overflowConfig struct {
+		Meta
+		Small  Int8Entry
+		USmall Uint8Entry
+		Neg    Uint16Entry
+		Narrow Int32Entry
+	}
+	var cfg overflowConfig
+	cfg.AddLayer(Map(map[string]any{
+		"Small":  int64(300),
+		"USmall": int64(300),
+		"Neg":    int64(-1),
+		"Narrow": int64(5_000_000_000),
+	}))
+	if err := Populate(context.Background(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	checks := []struct {
+		name string
+		set  bool
+		got  any
+	}{
+		{"Small", cfg.Small.IsSet(), cfg.Small.Value()},
+		{"USmall", cfg.USmall.IsSet(), cfg.USmall.Value()},
+		{"Neg", cfg.Neg.IsSet(), cfg.Neg.Value()},
+		{"Narrow", cfg.Narrow.IsSet(), cfg.Narrow.Value()},
+	}
+	for _, c := range checks {
+		if c.set {
+			t.Errorf("%s: IsSet=true after overflow, want false", c.name)
+		}
+		zero := reflect.Zero(reflect.TypeOf(c.got)).Interface()
+		if c.got != zero {
+			t.Errorf("%s: Value()=%v, want zero value %v", c.name, c.got, zero)
+		}
+	}
+}
+
+func TestPopulate_float32OverflowRejected(t *testing.T) {
+	type overflowConfig struct {
+		Meta
+		Big Float32Entry
+	}
+	var cfg overflowConfig
+	cfg.AddLayer(Map(map[string]any{
+		"Big": float64(1e40),
+	}))
+	if err := Populate(context.Background(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Big.IsSet() {
+		t.Errorf("Big: IsSet=true after float32 overflow, want false (got %v)", cfg.Big.Value())
+	}
+	if cfg.Big.Value() != 0 {
+		t.Errorf("Big: Value()=%v, want 0", cfg.Big.Value())
+	}
+}
+
+func TestPopulate_numericInRangeStillWorks(t *testing.T) {
+	type boundaryConfig struct {
+		Meta
+		MaxInt8  Int8Entry
+		MinInt8  Int8Entry
+		MaxUint8 Uint8Entry
+		MaxInt32 Int32Entry
+	}
+	var cfg boundaryConfig
+	cfg.AddLayer(Map(map[string]any{
+		"MaxInt8":  int64(127),
+		"MinInt8":  int64(-128),
+		"MaxUint8": int64(255),
+		"MaxInt32": int64(2147483647),
+	}))
+	if err := Populate(context.Background(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	checks := []struct {
+		name string
+		set  bool
+		got  any
+		want any
+	}{
+		{"MaxInt8", cfg.MaxInt8.IsSet(), cfg.MaxInt8.Value(), int8(127)},
+		{"MinInt8", cfg.MinInt8.IsSet(), cfg.MinInt8.Value(), int8(-128)},
+		{"MaxUint8", cfg.MaxUint8.IsSet(), cfg.MaxUint8.Value(), uint8(255)},
+		{"MaxInt32", cfg.MaxInt32.IsSet(), cfg.MaxInt32.Value(), int32(2147483647)},
+	}
+	for _, c := range checks {
+		if !c.set {
+			t.Errorf("%s: IsSet=false, want true", c.name)
+		}
+		if c.got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, c.got, c.want)
+		}
+	}
+}
+
+func TestPopulate_UnexportedEntryFieldFails(t *testing.T) {
+	type unexportedConfig struct {
+		Meta
+		port IntEntry
+	}
+	var cfg unexportedConfig
+	cfg.AddLayer(Map(map[string]any{"port": 8080}))
+
+	err := Populate(context.Background(), &cfg)
+	if err == nil {
+		t.Fatal("expected error for unexported entry field, got nil")
+	}
+	if !strings.Contains(err.Error(), "unexported") {
+		t.Errorf("Populate: got error %q, want it to mention \"unexported\"", err.Error())
+	}
+	if strings.Contains(err.Error(), "reflect: reflect.Value.Interface") {
+		t.Errorf("Populate: got raw reflect panic message %q, want a clean confstruct error", err.Error())
+	}
+	if !strings.Contains(err.Error(), "port") {
+		t.Errorf("Populate: got error %q, want it to name the field %q", err.Error(), "port")
+	}
+}
+
+func TestPopulate_UnexportedEntryFieldFails_Nested(t *testing.T) {
+	type innerConfig struct {
+		Deeper struct {
+			port IntEntry
+		}
+	}
+	type nestedUnexportedConfig struct {
+		Meta
+		Inner innerConfig
+	}
+	var cfg nestedUnexportedConfig
+	cfg.AddLayer(Map(map[string]any{"Inner.Deeper.port": 8080}))
+
+	err := Populate(context.Background(), &cfg)
+	if err == nil {
+		t.Fatal("expected error for nested unexported entry field, got nil")
+	}
+	if !strings.Contains(err.Error(), "unexported") {
+		t.Errorf("Populate: got error %q, want it to mention \"unexported\"", err.Error())
+	}
+	if strings.Contains(err.Error(), "reflect: reflect.Value.Interface") {
+		t.Errorf("Populate: got raw reflect panic message %q, want a clean confstruct error", err.Error())
+	}
+	if !strings.Contains(err.Error(), "Inner.Deeper.port") {
+		t.Errorf("Populate: got error %q, want it to name the nested field path %q", err.Error(), "Inner.Deeper.port")
+	}
+}
+
+func TestUnsetFields_UnexportedEntryFieldFails(t *testing.T) {
+	type unexportedConfig struct {
+		Meta
+		port IntEntry
+	}
+	var cfg unexportedConfig
+
+	unset, err := UnsetFields(&cfg)
+	if err == nil {
+		t.Fatal("expected error for unexported entry field, got nil")
+	}
+	if unset != nil {
+		t.Errorf("UnsetFields: got non-nil unset slice %v alongside an error, want nil", unset)
+	}
+	if !strings.Contains(err.Error(), "unexported") {
+		t.Errorf("UnsetFields: got error %q, want it to mention \"unexported\"", err.Error())
+	}
+	if strings.Contains(err.Error(), "reflect: reflect.Value.Interface") {
+		t.Errorf("UnsetFields: got raw reflect panic message %q, want a clean confstruct error", err.Error())
+	}
+	if !strings.Contains(err.Error(), "port") {
+		t.Errorf("UnsetFields: got error %q, want it to name the field %q", err.Error(), "port")
+	}
+}
+
 func TestPopulate_typeMismatchSilent(t *testing.T) {
 	var cfg testConfig
 	cfg.AddLayer(Map(map[string]any{
@@ -193,6 +371,60 @@ func TestPopulate_lookupError(t *testing.T) {
 	}
 }
 
+func TestPopulate_retryAfterFailure(t *testing.T) {
+	var cfg testConfig
+	failErr := errors.New("boom")
+	backend := &toggleErrBackend{field: "Name", err: &failErr}
+	cfg.AddLayer(backend)
+
+	if err := Populate(context.Background(), &cfg); err == nil {
+		t.Fatal("expected first Populate call to fail")
+	}
+
+	*backend.err = nil
+
+	if err := Populate(context.Background(), &cfg); err != nil {
+		t.Fatalf("expected retry on the same struct to succeed once the backend is fixed, got %v", err)
+	}
+	if cfg.Name.Value() != "value" {
+		t.Errorf("Name: got %q, want %q", cfg.Name.Value(), "value")
+	}
+
+	if err := Populate(context.Background(), &cfg); err == nil {
+		t.Error("expected a third Populate call to fail: a successful Populate is still one-shot")
+	}
+}
+
+func TestPopulate_failureCancelsWatches(t *testing.T) {
+	var cfg testConfig
+	ov := Override(nil)
+	cfg.AddLayer(Map(map[string]any{"Name": "default", "Port": 8080}))
+	cfg.AddLayer(ov)
+	cfg.AddLayer(errFieldBackend{field: "Port", err: errors.New("boom")})
+
+	// Deliberately never cancelled: proves cleanup is driven by Populate's own
+	// failure, not by the caller tearing down its context.
+	ctx := context.Background()
+
+	if err := Populate(ctx, &cfg); err == nil {
+		t.Fatal("expected Populate to fail on the Port lookup error")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		ov.mu.RLock()
+		n := len(ov.watchers["Name"])
+		ov.mu.RUnlock()
+		if n == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("watcher for Name still registered (%d) after failed Populate", n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestPopulate_watchableUpdate(t *testing.T) {
 	var cfg testConfig
 	w := &fakeWatchable{values: map[string]any{"Name": "remote"}}
@@ -243,6 +475,40 @@ func (e errBackend) Lookup(path string) (any, bool, error) {
 
 func (e errBackend) Name() string     { return "err" }
 func (e errBackend) Describe() string { return "" }
+
+// errFieldBackend errors only for the configured field, otherwise reports no value.
+type errFieldBackend struct {
+	field string
+	err   error
+}
+
+func (e errFieldBackend) Lookup(path string) (any, bool, error) {
+	if path == e.field {
+		return nil, false, e.err
+	}
+	return nil, false, nil
+}
+
+func (e errFieldBackend) Name() string     { return "errField" }
+func (e errFieldBackend) Describe() string { return "" }
+
+// toggleErrBackend errors for the configured field only while *err is
+// non-nil, letting a test simulate a transient failure being fixed and
+// retried against the same backend.
+type toggleErrBackend struct {
+	field string
+	err   *error
+}
+
+func (b *toggleErrBackend) Lookup(path string) (any, bool, error) {
+	if path == b.field && *b.err != nil {
+		return nil, false, *b.err
+	}
+	return "value", true, nil
+}
+
+func (b *toggleErrBackend) Name() string     { return "toggle" }
+func (b *toggleErrBackend) Describe() string { return "" }
 
 func (f *fakeWatchable) Lookup(path string) (any, bool, error) {
 	v, ok := f.values[path]

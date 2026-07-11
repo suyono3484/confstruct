@@ -96,6 +96,9 @@ type Backend interface {
 // WatchableBackend extends Backend for remote sources that push updates.
 // Watch is called once per field path during Populate; the backend must invoke
 // hook whenever the value at path changes, passing ok=false if the key is removed.
+// The context passed to Watch is derived from the context passed to Populate: it
+// is cancelled when that context is cancelled, and also cancelled immediately if
+// Populate itself fails, so a failed Populate call never leaves watches running.
 type WatchableBackend interface {
 	Backend
 	Watch(ctx context.Context, path string, hook func(v any, ok bool))
@@ -124,12 +127,24 @@ type fieldAwareBackend interface {
 	lookupField(path string, fields []reflect.StructField) (any, bool, error)
 }
 
+// populateState tracks the lifecycle of a single Meta across Populate calls.
+// A struct starts stateIdle, moves to stateRunning while a Populate call owns
+// it, and only reaches the terminal stateDone once that call fully succeeds.
+// A failed call releases the claim back to stateIdle so a subsequent Populate
+// call can retry; only a successful call permanently blocks further calls.
+const (
+	stateIdle uint32 = iota
+	stateRunning
+	stateDone
+)
+
 // Meta holds globally registered backends. Embedding it in a config struct
 // promotes AddLayer and OnResolve onto the struct directly.
 type Meta struct {
 	backends     []Backend
 	resolveHooks []ResolveHook
-	populated    atomic.Bool
+	state        atomic.Uint32
+	watchCancel  context.CancelFunc
 }
 
 // AddLayer registers a backend as a configuration layer. Layers added later
@@ -293,12 +308,40 @@ func coerce[T any](v any) (T, error) {
 	rv := reflect.ValueOf(v)
 	target := reflect.TypeFor[T]()
 	if isNumericKind(rv.Kind()) && isNumericKind(target.Kind()) {
-		return rv.Convert(target).Interface().(T), nil
+		// Route through the same bounds-checked parseString/strconv.Parse*
+		// path used for string-sourced values, rather than calling
+		// rv.Convert(target) directly: Convert silently truncates/wraps on
+		// narrowing or sign-changing conversions and on float64->float32
+		// magnitude overflow, since that's the defined (and desired, for
+		// plain Go code) behavior of a static numeric conversion. Formatting
+		// rv to its canonical decimal string and re-parsing it with the
+		// target's explicit bit size gets range checking for free from
+		// strconv, with a single implementation shared by both call sites.
+		result, err := parseString[T](formatNumericValue(rv), target)
+		if err != nil {
+			return zero, fmt.Errorf("confstruct: value %v overflows %s", v, target)
+		}
+		return result, nil
 	}
 	if rv.Kind() == reflect.String {
 		return parseString[T](rv.String(), target)
 	}
 	return zero, fmt.Errorf("confstruct: cannot convert %T to %s", v, target)
+}
+
+// formatNumericValue formats a numeric reflect.Value to its canonical decimal
+// string form, dispatching on the value's own native kind (not the target
+// type). Callers are expected to have already confirmed rv.Kind() is one of
+// the kinds isNumericKind recognizes.
+func formatNumericValue(rv reflect.Value) string {
+	switch {
+	case rv.CanInt():
+		return strconv.FormatInt(rv.Int(), 10)
+	case rv.CanUint():
+		return strconv.FormatUint(rv.Uint(), 10)
+	default:
+		return strconv.FormatFloat(rv.Float(), 'g', -1, 64)
+	}
 }
 
 func parseString[T any](s string, target reflect.Type) (T, error) {
@@ -346,7 +389,10 @@ func isNumericKind(k reflect.Kind) bool {
 // and registers watchers for any WatchableBackend layers. cfgStruct must be a
 // pointer to a struct embedding confstruct.Meta with at least one backend
 // registered; the lowest-priority backend (first added) must not be a
-// WatchableBackend. Populate may only be called once per config struct.
+// WatchableBackend. A successful Populate call may only happen once per config
+// struct; a call that returns an error does not consume that one-shot budget
+// and the same struct may be passed to Populate again (with corrected
+// backends) once the cause of the failure has been addressed.
 func Populate(ctx context.Context, cfgStruct any) error {
 	rv := reflect.ValueOf(cfgStruct)
 	if rv.Kind() != reflect.Pointer || rv.Elem().Kind() != reflect.Struct {
@@ -361,34 +407,53 @@ func Populate(ctx context.Context, cfgStruct any) error {
 
 	meta := metaField.Addr().Interface().(*Meta)
 
-	if !meta.populated.CompareAndSwap(false, true) {
+	if !meta.state.CompareAndSwap(stateIdle, stateRunning) {
 		return fmt.Errorf("confstruct: Populate called more than once")
 	}
 
 	if len(meta.backends) == 0 {
+		meta.state.Store(stateIdle)
 		return fmt.Errorf("confstruct: no backends registered")
 	}
 
 	if _, ok := meta.backends[0].(WatchableBackend); ok {
+		meta.state.Store(stateIdle)
 		return fmt.Errorf("confstruct: lowest-priority backend must not be a WatchableBackend")
 	}
 
-	return walkAndInject(ctx, sv, meta, "", nil)
+	watchCtx, cancelWatches := context.WithCancel(ctx)
+	meta.watchCancel = cancelWatches
+
+	if err := walkAndInject(watchCtx, sv, meta, "", nil); err != nil {
+		cancelWatches()
+		meta.watchCancel = nil
+		meta.state.Store(stateIdle)
+		return err
+	}
+
+	meta.state.Store(stateDone)
+	return nil
 }
 
 // UnsetFields walks cfgStruct and returns the dot-separated paths of all entry
 // fields for which IsSet() is false, in struct field order. An empty slice means
 // every field has a value from at least one backend. Panics if cfgStruct is not a
-// pointer to a struct embedding confstruct.Meta.
+// pointer to a struct embedding confstruct.Meta. Returns a non-nil error if the
+// struct contains an unexported entry field, since such a field cannot legally be
+// inspected via reflection.
 //
 // Typically called after Populate — before it, no backend has run and every field
 // will appear in the result. Useful for startup validation and as a test helper
 // that avoids hand-listing every field:
 //
-//	if unset := confstruct.UnsetFields(&cfg); len(unset) > 0 {
+//	unset, err := confstruct.UnsetFields(&cfg)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	if len(unset) > 0 {
 //	    log.Fatalf("required config fields are not set: %v", unset)
 //	}
-func UnsetFields(cfgStruct any) []string {
+func UnsetFields(cfgStruct any) ([]string, error) {
 	rv := reflect.ValueOf(cfgStruct)
 	if rv.Kind() != reflect.Pointer || rv.Elem().Kind() != reflect.Struct {
 		panic("confstruct: UnsetFields requires a pointer to a struct")
@@ -399,11 +464,13 @@ func UnsetFields(cfgStruct any) []string {
 		panic("confstruct: struct must embed confstruct.Meta")
 	}
 	var unset []string
-	collectUnset(sv, "", &unset)
-	return unset
+	if err := collectUnset(sv, "", &unset); err != nil {
+		return nil, err
+	}
+	return unset, nil
 }
 
-func collectUnset(sv reflect.Value, prefix string, unset *[]string) {
+func collectUnset(sv reflect.Value, prefix string, unset *[]string) error {
 	st := sv.Type()
 	for i := 0; i < st.NumField(); i++ {
 		f := st.Field(i)
@@ -419,6 +486,9 @@ func collectUnset(sv reflect.Value, prefix string, unset *[]string) {
 		}
 
 		if reflect.PointerTo(f.Type).Implements(layerManagerType) {
+			if !f.IsExported() {
+				return fmt.Errorf("confstruct: field %q is an unexported entry field; entry fields must be exported", key)
+			}
 			lm := fv.Addr().Interface().(layerManager)
 			_, _, _, isSet := lm.resolvedState()
 			if !isSet {
@@ -428,9 +498,12 @@ func collectUnset(sv reflect.Value, prefix string, unset *[]string) {
 		}
 
 		if f.Type.Kind() == reflect.Struct {
-			collectUnset(fv, key, unset)
+			if err := collectUnset(fv, key, unset); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
 }
 
 func walkAndInject(ctx context.Context, sv reflect.Value, meta *Meta, prefix string, chain []reflect.StructField) error {
@@ -450,6 +523,9 @@ func walkAndInject(ctx context.Context, sv reflect.Value, meta *Meta, prefix str
 		fieldChain := appendFieldChain(chain, f)
 
 		if reflect.PointerTo(f.Type).Implements(layerManagerType) {
+			if !f.IsExported() {
+				return fmt.Errorf("confstruct: field %q is an unexported entry field; entry fields must be exported", key)
+			}
 			lm := fv.Addr().Interface().(layerManager)
 			lm.initSlots(len(meta.backends))
 			notify := func() {

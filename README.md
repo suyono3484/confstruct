@@ -137,7 +137,7 @@ cfg.OnResolve(func(key string, value any, backendName, backendDesc string) {
 `UnsetFields` walks a config struct and returns the dot-separated paths of all entry fields for which `IsSet()` is false, in struct field order. An empty slice means every field has a value from at least one backend.
 
 ```go
-func UnsetFields(cfgStruct any) []string
+func UnsetFields(cfgStruct any) ([]string, error)
 ```
 
 Call it after `Populate` to validate that every required field was covered:
@@ -146,7 +146,11 @@ Call it after `Populate` to validate that every required field was covered:
 if err := confstruct.Populate(ctx, &cfg); err != nil {
     log.Fatal(err)
 }
-if unset := confstruct.UnsetFields(&cfg); len(unset) > 0 {
+unset, err := confstruct.UnsetFields(&cfg)
+if err != nil {
+    log.Fatal(err)
+}
+if len(unset) > 0 {
     log.Fatalf("required config fields are not set: %v", unset)
 }
 ```
@@ -160,13 +164,17 @@ func TestDefaultsAreComplete(t *testing.T) {
     if err := confstruct.Populate(context.Background(), &cfg); err != nil {
         t.Fatal(err)
     }
-    for _, path := range confstruct.UnsetFields(&cfg) {
+    unset, err := confstruct.UnsetFields(&cfg)
+    if err != nil {
+        t.Fatal(err)
+    }
+    for _, path := range unset {
         t.Errorf("%s has no default value", path)
     }
 }
 ```
 
-`UnsetFields` panics if passed a non-pointer or a struct that does not embed `confstruct.Meta`.
+`UnsetFields` panics if passed a non-pointer or a struct that does not embed `confstruct.Meta`. It returns a non-nil error if the struct contains an unexported entry field.
 
 ## Layering and precedence
 
@@ -192,7 +200,11 @@ func TestDefaultsAreComplete(t *testing.T) {
     if err := confstruct.Populate(context.Background(), &cfg); err != nil {
         t.Fatal(err)
     }
-    for _, path := range confstruct.UnsetFields(&cfg) {
+    unset, err := confstruct.UnsetFields(&cfg)
+    if err != nil {
+        t.Fatal(err)
+    }
+    for _, path := range unset {
         t.Errorf("%s has no default value in the Map layer", path)
     }
 }
@@ -309,7 +321,11 @@ func TestTagDefaultsAreComplete(t *testing.T) {
     if err := confstruct.Populate(context.Background(), &cfg); err != nil {
         t.Fatal(err)
     }
-    for _, path := range confstruct.UnsetFields(&cfg) {
+    unset, err := confstruct.UnsetFields(&cfg)
+    if err != nil {
+        t.Fatal(err)
+    }
+    for _, path := range unset {
         t.Errorf("%s has no cs.default tag or its value failed to parse", path)
     }
 }

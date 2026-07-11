@@ -41,7 +41,11 @@ func TestTagDefaultsAreComplete(t *testing.T) {
 	if err := cs.Populate(context.Background(), &cfg); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range cs.UnsetFields(&cfg) {
+	unset, err := cs.UnsetFields(&cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range unset {
 		if !noSafeDefault[path] {
 			t.Errorf("%s has no cs.default tag or its value failed to parse", path)
 		}
