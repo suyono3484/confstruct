@@ -131,7 +131,10 @@ func lookupNested(m map[string]any, parts []string) (any, bool, error) {
 	if len(parts) == 0 || m == nil {
 		return nil, false, nil
 	}
-	v, ok := lookupCaseInsensitive(m, parts[0])
+	v, ok, err := lookupCaseInsensitive(m, parts[0])
+	if err != nil {
+		return nil, false, err
+	}
 	if !ok {
 		return nil, false, nil
 	}
@@ -151,10 +154,16 @@ func (f *fileBackend) lookupFieldRecursive(path string, m map[string]any, fields
 	}
 	field := fields[index]
 	alias, hasAlias := fileSegmentAlias(field)
-	canonicalValue, canonicalOK := lookupCaseInsensitive(m, field.Name)
+	canonicalValue, canonicalOK, err := lookupCaseInsensitive(m, field.Name)
+	if err != nil {
+		return nil, false, err
+	}
 	aliasValue, aliasOK := any(nil), false
 	if hasAlias {
-		aliasValue, aliasOK = lookupCaseInsensitive(m, alias)
+		aliasValue, aliasOK, err = lookupCaseInsensitive(m, alias)
+		if err != nil {
+			return nil, false, err
+		}
 	}
 	if hasAlias && canonicalOK && aliasOK {
 		return nil, false, fmt.Errorf("conflicting file keys for %q: both %q and alias %q are present", path, field.Name, alias)
@@ -176,14 +185,26 @@ func (f *fileBackend) lookupFieldRecursive(path string, m map[string]any, fields
 	return f.lookupFieldRecursive(path, nested, fields, index+1)
 }
 
-func lookupCaseInsensitive(m map[string]any, target string) (any, bool) {
-	target = strings.ToLower(target)
+func lookupCaseInsensitive(m map[string]any, target string) (any, bool, error) {
+	lowerTarget := strings.ToLower(target)
+	var matchKey string
+	var matchValue any
+	found := false
 	for k, v := range m {
-		if strings.ToLower(k) == target {
-			return v, true
+		if strings.ToLower(k) != lowerTarget {
+			continue
 		}
+		if found {
+			return nil, false, fmt.Errorf("confstruct: ambiguous file keys %q and %q both match %q case-insensitively", matchKey, k, target)
+		}
+		matchKey = k
+		matchValue = v
+		found = true
 	}
-	return nil, false
+	if !found {
+		return nil, false, nil
+	}
+	return matchValue, true, nil
 }
 
 func fileSegmentAlias(field reflect.StructField) (string, bool) {

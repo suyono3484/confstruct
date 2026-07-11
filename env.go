@@ -46,8 +46,10 @@ func WithDotEnv(path string) EnvOption {
 // underscores (e.g., "Database.Host" → "DATABASE_HOST"). During Populate, an
 // entry field tagged with `cs.env:"..."` uses that env var name instead of the
 // derived path name; any prefix configured via WithPrefix is still prepended to
-// the tag value. All values are returned as strings; confstruct parses them
-// into the target field type.
+// the tag value. Tag-derived keys are uppercased exactly like auto-derived path
+// keys before lookup, so `cs.env:"db_port"` and `cs.env:"DB_PORT"` are
+// equivalent — case in the tag value is never significant. All values are
+// returned as strings; confstruct parses them into the target field type.
 func Env(opts ...EnvOption) (Backend, error) {
 	b := &envBackend{}
 	for _, o := range opts {
@@ -125,6 +127,13 @@ func (e *envBackend) prefixKey(key string) string {
 	return key
 }
 
+// envName returns the entry field's `cs.env` tag value, if any. The returned
+// name is normalized to uppercase before being used as a lookup key — this is
+// an explicit, documented contract, not an incidental side effect: it
+// guarantees that `cs.env:"db_port"` and `cs.env:"DB_PORT"` are equivalent,
+// matching the same uppercase normalization [envBackend.pathToKey] already
+// applies to auto-derived path keys. Callers must not rely on the tag value's
+// original casing being preserved.
 func envName(fields []reflect.StructField) (string, bool) {
 	if len(fields) == 0 {
 		return "", false
@@ -133,7 +142,7 @@ func envName(fields []reflect.StructField) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	name = strings.TrimSpace(name)
+	name = strings.ToUpper(strings.TrimSpace(name))
 	if name == "" {
 		return "", false
 	}

@@ -19,6 +19,7 @@ import (
 	"errors"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -528,5 +529,76 @@ func (f *fakeWatchable) Describe() string { return "" }
 func (f *fakeWatchable) trigger(path string, v any, ok bool) {
 	if h, exists := f.hooks[path]; exists {
 		h(v, ok)
+	}
+}
+
+// TestOnResolve_NotFiredOnIdenticalOverrideSet verifies that repeating an
+// identical Set call on the current winning layer does not refire OnResolve:
+// the hook's contract is "changes the winner", not "a watchable layer wrote
+// something".
+func TestOnResolve_NotFiredOnIdenticalOverrideSet(t *testing.T) {
+	var cfg testConfig
+	var count atomic.Int64
+	cfg.OnResolve(func(key string, value any, backendName, backendDesc string) {
+		count.Add(1)
+	})
+
+	cfg.AddLayer(Map(map[string]any{"Name": "default"}))
+	overrides := Override(map[string]any{"Name": "user"})
+	cfg.AddLayer(overrides)
+
+	if err := Populate(context.Background(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := count.Load(); got != 1 {
+		t.Fatalf("hook count after Populate: got %d, want 1", got)
+	}
+
+	overrides.Set("Name", "user")
+	overrides.Set("Name", "user")
+
+	if got := count.Load(); got != 1 {
+		t.Fatalf("hook count after identical Set calls: got %d, want 1 (unchanged)", got)
+	}
+}
+
+// TestOnResolve_NotFiredWhenWatchedBackendIsNotWinner verifies that updates on
+// a watchable layer that isn't the current winner (because a higher-priority
+// layer already has a value) never refire OnResolve, since the resolved
+// struct field never actually changes.
+func TestOnResolve_NotFiredWhenWatchedBackendIsNotWinner(t *testing.T) {
+	var cfg testConfig
+	var count atomic.Int64
+	cfg.OnResolve(func(key string, value any, backendName, backendDesc string) {
+		count.Add(1)
+	})
+
+	cfg.AddLayer(Map(map[string]any{"Name": "default"}))
+	low := Override(map[string]any{"Name": "low"})
+	high := Override(map[string]any{"Name": "high"})
+	cfg.AddLayer(low)
+	cfg.AddLayer(high)
+
+	if err := Populate(context.Background(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := count.Load(); got != 1 {
+		t.Fatalf("hook count after Populate: got %d, want 1", got)
+	}
+	if got := cfg.Name.Value(); got != "high" {
+		t.Fatalf("Name after Populate: got %q, want %q", got, "high")
+	}
+
+	low.Set("Name", "low2")
+	low.Set("Name", "low3")
+	low.Set("Name", "low4")
+
+	if got := count.Load(); got != 1 {
+		t.Fatalf("hook count after low-layer Set calls: got %d, want 1 (unchanged)", got)
+	}
+	if got := cfg.Name.Value(); got != "high" {
+		t.Fatalf("Name after low-layer Set calls: got %q, want %q (high should still win)", got, "high")
 	}
 }

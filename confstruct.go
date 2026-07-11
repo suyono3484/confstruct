@@ -116,6 +116,7 @@ type layerManager interface {
 	initSlotMeta(index int, name, desc string)
 	setSlot(index int, v any, ok bool)
 	resolvedState() (value any, backendName, backendDesc string, isSet bool)
+	hasChangedSinceNotify() (value any, name, desc string, isSet bool, changed bool)
 }
 
 var (
@@ -170,12 +171,16 @@ type layerSlot[T any] struct {
 }
 
 type entry[T any] struct {
-	mu           sync.RWMutex
-	slots        []layerSlot[T]
-	resolved     T
-	isSet        bool
-	resolvedName string
-	resolvedDesc string
+	mu            sync.RWMutex
+	slots         []layerSlot[T]
+	resolved      T
+	isSet         bool
+	resolvedName  string
+	resolvedDesc  string
+	notifiedValue T
+	notifiedName  string
+	notifiedDesc  string
+	notifiedIsSet bool
 }
 
 func (e *entry[T]) initSlots(n int) {
@@ -240,6 +245,30 @@ func (e *entry[T]) resolvedState() (any, string, string, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.resolved, e.resolvedName, e.resolvedDesc, e.isSet
+}
+
+// hasChangedSinceNotify reports the current resolved state along with whether
+// it differs from the state last reported through this method. It only
+// reports changed=true when isSet is true and either this is the first time
+// reporting or the resolved value/backend name/backend desc differs from what
+// was last reported; once it reports changed=true, it remembers that state so
+// a subsequent identical resolution reports changed=false.
+func (e *entry[T]) hasChangedSinceNotify() (value any, name, desc string, isSet bool, changed bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	value, name, desc, isSet = e.resolved, e.resolvedName, e.resolvedDesc, e.isSet
+	if !isSet {
+		return value, name, desc, isSet, false
+	}
+	changed = !e.notifiedIsSet || name != e.notifiedName || desc != e.notifiedDesc ||
+		!reflect.DeepEqual(any(e.resolved), any(e.notifiedValue))
+	if changed {
+		e.notifiedValue = e.resolved
+		e.notifiedName = name
+		e.notifiedDesc = desc
+		e.notifiedIsSet = true
+	}
+	return
 }
 
 // SourceName returns the Name() of the backend that provided the resolved value.
@@ -532,8 +561,8 @@ func walkAndInject(ctx context.Context, sv reflect.Value, meta *Meta, prefix str
 				if len(meta.resolveHooks) == 0 {
 					return
 				}
-				value, name, desc, isSet := lm.resolvedState()
-				if !isSet {
+				value, name, desc, isSet, changed := lm.hasChangedSinceNotify()
+				if !isSet || !changed {
 					return
 				}
 				for _, h := range meta.resolveHooks {

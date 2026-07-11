@@ -207,6 +207,62 @@ func TestEnv_osEnvTakesPrecedenceOverDotEnv(t *testing.T) {
 	}
 }
 
+func TestEnv_tagLowercaseUppercasedForLookup(t *testing.T) {
+	t.Setenv("APP_DB_PORT", "45432")
+
+	type Config struct {
+		Meta
+		Database struct {
+			Port Int32Entry `cs.env:"db_port"`
+		}
+	}
+
+	var cfg Config
+	eb, err := Env(WithPrefix("APP"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.AddLayer(eb)
+	if err := Populate(context.Background(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	if !cfg.Database.Port.IsSet() {
+		t.Fatal("Database.Port: IsSet=false, want true")
+	}
+	if got := cfg.Database.Port.Value(); got != 45432 {
+		t.Errorf("Database.Port: got %d, want 45432", got)
+	}
+}
+
+func TestEnv_tagMixedCaseNormalized(t *testing.T) {
+	t.Setenv("DB_PORT", "55432")
+
+	type Config struct {
+		Meta
+		Database struct {
+			Port Int32Entry `cs.env:"Db_Port"`
+		}
+	}
+
+	var cfg Config
+	eb, err := Env()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.AddLayer(eb)
+	if err := Populate(context.Background(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	if !cfg.Database.Port.IsSet() {
+		t.Fatal("Database.Port: IsSet=false, want true")
+	}
+	if got := cfg.Database.Port.Value(); got != 55432 {
+		t.Errorf("Database.Port: got %d, want 55432", got)
+	}
+}
+
 func TestEnv_tagOverrideDotEnv(t *testing.T) {
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, ".env")

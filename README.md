@@ -357,6 +357,8 @@ type Config struct {
 
 With `confstruct.WithPrefix("APP")`, that field resolves from `APP_DB_PORT`, not `APP_DATABASE_PORT`.
 
+Env keys are always looked up in uppercase, whether auto-derived from the struct path or taken from a `cs.env` tag. A tag value of `cs.env:"db_port"` or `cs.env:"Db_Port"` is uppercased before lookup just like `cs.env:"DB_PORT"` — do not rely on lowercase or mixed-case tag values matching a differently-cased real environment variable.
+
 OS environment variables take precedence over `.env` file values. All values are returned as strings; confstruct parses them into the target field type.
 
 ### File

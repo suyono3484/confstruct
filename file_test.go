@@ -113,6 +113,47 @@ func TestFile_CaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestFile_CaseInsensitiveConflict(t *testing.T) {
+	content := "Host: foo\nhost: bar\n"
+	b := mustFileBackend(t, "config.yaml", content)
+	for i := 0; i < 10; i++ {
+		_, _, err := b.Lookup("Host")
+		if err == nil {
+			t.Fatal("Lookup(Host): expected ambiguous conflict error, got nil")
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "ambiguous") || !strings.Contains(msg, `"Host"`) || !strings.Contains(msg, `"host"`) {
+			t.Fatalf("Lookup(Host): got error %q; want ambiguous conflict mentioning both %q and %q", msg, "Host", "host")
+		}
+	}
+}
+
+func TestFile_CaseInsensitiveConflict_Nested(t *testing.T) {
+	content := `
+database:
+  Host: foo
+  host: bar
+`
+	type Config struct {
+		Meta
+		Database struct {
+			Host StringEntry
+		}
+	}
+
+	b := mustFileBackend(t, "config.yaml", content)
+	var cfg Config
+	cfg.AddLayer(b)
+	err := Populate(context.Background(), &cfg)
+	if err == nil {
+		t.Fatal("Populate: expected ambiguous conflict error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "ambiguous") || !strings.Contains(msg, `"Host"`) || !strings.Contains(msg, `"host"`) {
+		t.Fatalf("Populate: got error %q; want ambiguous conflict mentioning both %q and %q", msg, "Host", "host")
+	}
+}
+
 func TestFile_WithFormat(t *testing.T) {
 	content := `{"host":"localhost"}`
 	dir := t.TempDir()
