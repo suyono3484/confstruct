@@ -222,7 +222,7 @@ type Backend interface {
 "Database.Pool.Max" // doubly nested struct field
 ```
 
-Some built-in backends may also consult backend-specific struct tags while resolving their own source keys. For example, the File backend recognizes `cs.file.segment-alias`.
+Some built-in backends may also consult backend-specific struct tags while resolving their own source keys. For example, the Env backend recognizes `cs.env` and the File backend recognizes `cs.file.segment-alias`.
 
 The `bool` return value distinguishes "this backend has a value of zero" from "this backend has no value at all", preserving the set/unset distinction at the source level.
 
@@ -327,6 +327,19 @@ envBackend, err := confstruct.Env(
     confstruct.WithDotEnv(".env"), // silently skipped if the file does not exist
 )
 ```
+
+During `Populate`, the Env backend also recognizes `cs.env` on entry fields. The tag value is the env var name without the configured prefix.
+
+```go
+type Config struct {
+    confstruct.Meta
+    Database struct {
+        Port confstruct.IntEntry `cs.env:"DB_PORT"`
+    }
+}
+```
+
+With `confstruct.WithPrefix("APP")`, that field resolves from `APP_DB_PORT`, not `APP_DATABASE_PORT`.
 
 OS environment variables take precedence over `.env` file values. All values are returned as strings; confstruct parses them into the target field type.
 

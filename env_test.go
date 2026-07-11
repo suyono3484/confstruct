@@ -82,6 +82,62 @@ func TestEnv_withPrefix(t *testing.T) {
 	}
 }
 
+func TestEnv_tagOverride(t *testing.T) {
+	t.Setenv("DB_PORT", "15432")
+
+	type Config struct {
+		Meta
+		Database struct {
+			Port Int32Entry `cs.env:"DB_PORT"`
+		}
+	}
+
+	var cfg Config
+	eb, err := Env()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.AddLayer(eb)
+	if err := Populate(context.Background(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	if !cfg.Database.Port.IsSet() {
+		t.Fatal("Database.Port: IsSet=false, want true")
+	}
+	if got := cfg.Database.Port.Value(); got != 15432 {
+		t.Errorf("Database.Port: got %d, want 15432", got)
+	}
+}
+
+func TestEnv_tagOverrideWithPrefix(t *testing.T) {
+	t.Setenv("APP_DB_PORT", "25432")
+
+	type Config struct {
+		Meta
+		Database struct {
+			Port Int32Entry `cs.env:"DB_PORT"`
+		}
+	}
+
+	var cfg Config
+	eb, err := Env(WithPrefix("APP"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.AddLayer(eb)
+	if err := Populate(context.Background(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	if !cfg.Database.Port.IsSet() {
+		t.Fatal("Database.Port: IsSet=false, want true")
+	}
+	if got := cfg.Database.Port.Value(); got != 25432 {
+		t.Errorf("Database.Port: got %d, want 25432", got)
+	}
+}
+
 func TestEnv_dotEnvFile(t *testing.T) {
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, ".env")
@@ -148,6 +204,38 @@ func TestEnv_osEnvTakesPrecedenceOverDotEnv(t *testing.T) {
 	}
 	if cfg.Port.Value() != 1111 {
 		t.Errorf("Port: got %d, want 1111 (from .env)", cfg.Port.Value())
+	}
+}
+
+func TestEnv_tagOverrideDotEnv(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env")
+	if err := os.WriteFile(envFile, []byte("APP_DB_PORT=35432\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	type Config struct {
+		Meta
+		Database struct {
+			Port Int32Entry `cs.env:"DB_PORT"`
+		}
+	}
+
+	var cfg Config
+	eb, err := Env(WithPrefix("APP"), WithDotEnv(envFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.AddLayer(eb)
+	if err := Populate(context.Background(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	if !cfg.Database.Port.IsSet() {
+		t.Fatal("Database.Port: IsSet=false, want true")
+	}
+	if got := cfg.Database.Port.Value(); got != 35432 {
+		t.Errorf("Database.Port: got %d, want 35432", got)
 	}
 }
 

@@ -17,6 +17,7 @@ package confstruct
 import (
 	"bufio"
 	"os"
+	"reflect"
 	"strings"
 )
 
@@ -42,8 +43,11 @@ func WithDotEnv(path string) EnvOption {
 
 // Env returns a Backend that reads from environment variables. Struct field
 // paths are mapped to env var names by uppercasing and replacing dots with
-// underscores (e.g., "Database.Host" → "DATABASE_HOST"). All values are
-// returned as strings; confstruct parses them into the target field type.
+// underscores (e.g., "Database.Host" → "DATABASE_HOST"). During Populate, an
+// entry field tagged with `cs.env:"..."` uses that env var name instead of the
+// derived path name; any prefix configured via WithPrefix is still prepended to
+// the tag value. All values are returned as strings; confstruct parses them
+// into the target field type.
 func Env(opts ...EnvOption) (Backend, error) {
 	b := &envBackend{}
 	for _, o := range opts {
@@ -64,6 +68,8 @@ type envBackend struct {
 	dotEnvPath string
 	dotEnv     map[string]string
 }
+
+const envNameTag = "cs.env"
 
 // EnvBackendName is the Name() identifier for an [Env] backend.
 // Use it to compare against [ResolveHook] arguments without hard-coding the string.
@@ -86,6 +92,18 @@ func (e *envBackend) Describe() string {
 
 func (e *envBackend) Lookup(path string) (any, bool, error) {
 	key := e.pathToKey(path)
+	return e.lookupKey(key)
+}
+
+func (e *envBackend) lookupField(path string, fields []reflect.StructField) (any, bool, error) {
+	key := e.pathToKey(path)
+	if name, ok := envName(fields); ok {
+		key = e.prefixKey(name)
+	}
+	return e.lookupKey(key)
+}
+
+func (e *envBackend) lookupKey(key string) (any, bool, error) {
 	if val, ok := os.LookupEnv(key); ok {
 		return val, true, nil
 	}
@@ -97,10 +115,29 @@ func (e *envBackend) Lookup(path string) (any, bool, error) {
 
 func (e *envBackend) pathToKey(path string) string {
 	key := strings.ToUpper(strings.ReplaceAll(path, ".", "_"))
+	return e.prefixKey(key)
+}
+
+func (e *envBackend) prefixKey(key string) string {
 	if e.prefix != "" {
 		return e.prefix + "_" + key
 	}
 	return key
+}
+
+func envName(fields []reflect.StructField) (string, bool) {
+	if len(fields) == 0 {
+		return "", false
+	}
+	name, ok := fields[len(fields)-1].Tag.Lookup(envNameTag)
+	if !ok {
+		return "", false
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", false
+	}
+	return name, true
 }
 
 // parseDotEnv reads a .env file and returns its key-value pairs.
