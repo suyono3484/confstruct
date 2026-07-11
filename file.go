@@ -122,7 +122,7 @@ func (f *fileBackend) lookupField(path string, fields []reflect.StructField) (an
 	if len(fields) == 0 {
 		return f.Lookup(path)
 	}
-	return f.lookupFieldRecursive(path, f.values, fields, 0)
+	return f.lookupFieldRecursive(f.values, fields, 0, "")
 }
 
 // lookupNested navigates a nested map[string]any using case-insensitive key
@@ -148,11 +148,15 @@ func lookupNested(m map[string]any, parts []string) (any, bool, error) {
 	return lookupNested(nested, parts[1:])
 }
 
-func (f *fileBackend) lookupFieldRecursive(path string, m map[string]any, fields []reflect.StructField, index int) (any, bool, error) {
+func (f *fileBackend) lookupFieldRecursive(m map[string]any, fields []reflect.StructField, index int, consumed string) (any, bool, error) {
 	if len(fields) == 0 || m == nil || index >= len(fields) {
 		return nil, false, nil
 	}
 	field := fields[index]
+	segmentPath := field.Name
+	if consumed != "" {
+		segmentPath = consumed + "." + field.Name
+	}
 	alias, hasAlias := fileSegmentAlias(field)
 	canonicalValue, canonicalOK, err := lookupCaseInsensitive(m, field.Name)
 	if err != nil {
@@ -166,7 +170,7 @@ func (f *fileBackend) lookupFieldRecursive(path string, m map[string]any, fields
 		}
 	}
 	if hasAlias && canonicalOK && aliasOK {
-		return nil, false, fmt.Errorf("conflicting file keys for %q: both %q and alias %q are present", path, field.Name, alias)
+		return nil, false, fmt.Errorf("conflicting file keys for %q: both %q and alias %q are present", segmentPath, field.Name, alias)
 	}
 	v, ok := canonicalValue, canonicalOK
 	if aliasOK {
@@ -182,7 +186,7 @@ func (f *fileBackend) lookupFieldRecursive(path string, m map[string]any, fields
 	if !ok {
 		return nil, false, nil
 	}
-	return f.lookupFieldRecursive(path, nested, fields, index+1)
+	return f.lookupFieldRecursive(nested, fields, index+1, segmentPath)
 }
 
 func lookupCaseInsensitive(m map[string]any, target string) (any, bool, error) {

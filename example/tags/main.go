@@ -1,3 +1,5 @@
+//go:build example
+
 // Copyright 2026 Suyono
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,7 +16,7 @@
 
 // Run this example with:
 //
-//	go run .
+//	go run -tags=example .
 //
 // This example uses MapFromTags() to supply hard-coded defaults from cs.default
 // struct tag annotations, keeping defaults co-located with the field declarations.

@@ -14,6 +14,13 @@ This is a struct-first Go configuration library. The central rule: **the struct 
 - Struct unmarshaling must be the core model, not a deserialization step bolted on at the end.
 - Flexibility is a liability here. Prefer opinionated, consistent APIs over generic ones.
 
+`Override`'s `Set` and `Unset` methods are a deliberately narrow, single-backend,
+write-only exception for runtime override, hot-reload, and feature-flag use cases.
+They exist because backends are constructed independently of the target struct and
+therefore address fields by string path; reads still always go through the populated
+struct. Do not generalize this pattern to other backends or add further string-keyed
+write APIs without updating this carve-out.
+
 ## Testing conventions
 
 When running tests, always target a specific package — never use `./...`. For example:
@@ -22,7 +29,15 @@ When running tests, always target a specific package — never use `./...`. For 
 go test github.com/suyono3484/confstruct
 ```
 
-The `example/` package has its own tests but they are opt-in and must be run explicitly when needed. Using `./...` would pull them into every test run, which is not the intent.
+The `example/` packages have their own tests but are opt-in. Run one explicitly
+with its build tag when needed:
+
+```
+go test -tags=example github.com/suyono3484/confstruct/example/map
+```
+
+The same tag is required for `go run` in an example directory, for example
+`go run -tags=example .`.
 
 ## Prior art context
 

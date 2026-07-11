@@ -329,6 +329,38 @@ db:
 	if got := err.Error(); got == "" || !strings.Contains(got, `both "Database" and alias "db" are present`) {
 		t.Fatalf("Populate: got error %q; want parent segment conflict", got)
 	}
+	if got := err.Error(); !strings.Contains(got, `conflicting file keys for "Database"`) || strings.Contains(got, `conflicting file keys for "Database.Host"`) {
+		t.Fatalf("Populate: got error %q; want conflict path Database", got)
+	}
+}
+
+func TestFile_Populate_SegmentAliasConflictOnMiddleSegment_ThreeLevels(t *testing.T) {
+	content := `
+a:
+  database:
+    host: canonical.example.com
+  db:
+    host: aliased.example.com
+`
+	type Config struct {
+		Meta
+		A struct {
+			Database struct {
+				Host StringEntry
+			} `cs.file.segment-alias:"db"`
+		}
+	}
+
+	b := mustFileBackend(t, "config.yaml", content)
+	var cfg Config
+	cfg.AddLayer(b)
+	err := Populate(context.Background(), &cfg)
+	if err == nil {
+		t.Fatal("Populate: expected conflict error, got nil")
+	}
+	if got := err.Error(); !strings.Contains(got, `conflicting file keys for "A.Database"`) || strings.Contains(got, `conflicting file keys for "A.Database.Host"`) {
+		t.Fatalf("Populate: got error %q; want conflict path A.Database", got)
+	}
 }
 
 func TestFile_Populate_SegmentAliasConflictOnLeafSegment(t *testing.T) {
