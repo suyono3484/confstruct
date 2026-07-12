@@ -15,6 +15,18 @@ it up against every backend in the same recursive step — there is no
 existing pass that first collects every entry field's path and tag, across
 the whole tree, before backends are consulted.
 
+## Tracker
+
+| Step | Status | Notes |
+| --- | --- | --- |
+| [2.1 New optional `Backend` interface](#21-new-optional-backend-interface) | Not started | |
+| [2.2 Collecting `[]fieldPath`](#22-collecting-fieldpath-before-the-value-walk) | Not started | |
+| [2.3 Wiring in `Populate`](#23-wiring-in-populate-confstructgo425-465) | Not started | |
+| [2.4 `pflagBackend.checkNames`](#24-pflagbackendchecknames) | Not started | |
+| [2.5 Tests](#25-tests--in-confstruct_testgo-or-a-new-pflag_testgo) | Not started | |
+
+Status values: `Not started`, `In progress`, `Done`.
+
 ## 2.1 New optional `Backend` interface
 
 Add to `confstruct.go`, next to `fieldAwareBackend`:

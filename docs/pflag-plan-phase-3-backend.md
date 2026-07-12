@@ -11,6 +11,18 @@ implementation outline](pflag-integration.md#proposed-implementation-outline),
 [Semantics](pflag-integration.md#semantics), [Type
 support](pflag-integration.md#type-support).
 
+## Tracker
+
+| Step | Status | Notes |
+| --- | --- | --- |
+| [3.1 Dependency](#31-dependency) | Not started | |
+| [3.2 New file `pflag.go`](#32-new-file-pflaggo) | Not started | |
+| [3.3 Type coercion](#33-type-coercion) | Not started | |
+| [3.4 Tests](#34-tests--pflag_testgo) | Not started | |
+| [3.5 Godoc](#35-godoc) | Not started | |
+
+Status values: `Not started`, `In progress`, `Done`.
+
 ## 3.1 Dependency
 
 ```

@@ -34,6 +34,22 @@ tagged independently of whether the `pflag` backend ships immediately after.
 Start at [Phase 0](pflag-plan-phase-0-error-handling.md) and follow the
 "Next" link at the bottom of each phase document in order.
 
+## Tracker
+
+Update this table as work lands — one row per phase, checked off only once
+its own exit criteria (tests green, doc status line updated where
+applicable) are met, not when a PR merely opens.
+
+| Phase | Status | PR | Notes |
+| --- | --- | --- | --- |
+| [0 — `Populate` error handling](pflag-plan-phase-0-error-handling.md) | Not started | | |
+| [1 — name conversion](pflag-plan-phase-1-name-conversion.md) | Not started | | |
+| [2 — duplicate-name validation](pflag-plan-phase-2-duplicate-detection.md) | Not started | | |
+| [3 — `pflagBackend` core](pflag-plan-phase-3-backend.md) | Not started | | |
+| [4 — example and docs](pflag-plan-phase-4-example-docs.md) | Not started | | |
+
+Status values: `Not started`, `In progress`, `Done`.
+
 ## Open follow-ups
 
 Explicitly not part of this plan, called out so they aren't mistaken for

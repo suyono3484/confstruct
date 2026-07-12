@@ -11,6 +11,20 @@ failure). Do this first so the `pflag` backend is born reporting errors,
 instead of adding a fifth silent-failure call site that then has to be
 revisited.
 
+## Tracker
+
+| Step | Status | Notes |
+| --- | --- | --- |
+| [0.1 `layerManager` interface change](#01-layermanager-interface-change-confstructgo114-120) | Not started | |
+| [0.2 `entry[T].setSlot`](#02-entrytsetslot-confstructgo195-210) | Not started | |
+| [0.3 `walkAndInject`](#03-walkandinject-confstructgo538-597) | Not started | |
+| [0.4 `Populate`](#04-populate-confstructgo425-465) | Not started | |
+| [0.5 Strip doubled prefix](#05-strip-the-doubled-confstruct--prefix) | Not started | |
+| [0.6 Tests](#06-tests) | Not started | |
+| [0.7 Exit criteria](#07-exit-criteria) | Not started | |
+
+Status values: `Not started`, `In progress`, `Done`.
+
 ## 0.1 `layerManager` interface change (`confstruct.go:114-120`)
 
 ```go

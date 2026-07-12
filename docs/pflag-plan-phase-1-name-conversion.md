@@ -12,6 +12,16 @@ conversion](pflag-integration.md#identifier-to-flag-name-conversion) and
 logic, no `pflag` dependency yet — this can be written and fully unit-tested
 before touching `go.mod`.
 
+## Tracker
+
+| Step | Status | Notes |
+| --- | --- | --- |
+| [1.1 New file `pflag_name.go`](#11-new-file-pflag_namego) | Not started | |
+| [1.2 Word-splitting algorithm](#12-word-splitting-algorithm-state-machine) | Not started | |
+| [1.3 Tests](#13-tests--pflag_name_testgo) | Not started | |
+
+Status values: `Not started`, `In progress`, `Done`.
+
 ## 1.1 New file `pflag_name.go`
 
 ```go
