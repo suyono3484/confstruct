@@ -4,6 +4,17 @@ Part of [the `pflag` implementation plan](pflag-implementation-plan.md).
 Previous: [Phase 3 — `pflagBackend` core](pflag-plan-phase-3-backend.md).
 Next: none — this is the last phase.
 
+**Package layout (decided):** the backend is `github.com/suyono3484/confstruct/pflag`,
+a separate package from `confstruct` (see
+[pflag-integration.md#package-layout](pflag-integration.md#package-layout)).
+The example app in [4.1](#41-example-app) must import both packages, and
+since both this project's new package and `github.com/spf13/pflag` are
+named `pflag`, the example needs an import alias for one of them (see the
+aliased example in
+[pflag-integration.md](pflag-integration.md#recommended-direction)) —
+worth calling out in the example's own comments, since a reader copying it
+verbatim will hit the collision immediately.
+
 ## Tracker
 
 | Step | Status | Notes |
@@ -22,7 +33,12 @@ the existing examples (check `example/map` for the tag comment and
 package layout). Should reproduce the `main.go` sketch from [Recommended
 direction](pflag-integration.md#recommended-direction) closely enough
 that a reader can copy it, plus a comment showing an unset flag falling
-through to a lower layer.
+through to a lower layer. Import both `github.com/suyono3484/confstruct`
+and the new `github.com/suyono3484/confstruct/pflag` package with an
+explicit alias (e.g. `cspflag`) alongside `github.com/spf13/pflag`, and add
+a short comment noting *why* the alias is there — the two packages sharing
+the name `pflag` is exactly the kind of thing a reader copying the example
+will trip over silently otherwise.
 
 ## 4.2 Optional cobra example
 

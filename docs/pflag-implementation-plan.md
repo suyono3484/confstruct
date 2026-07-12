@@ -21,6 +21,36 @@ Each phase below is its own document, sized for a separate PR with its own
 tests. Phase 0 is a pure bugfix to existing behavior and should land and be
 tagged independently of whether the `pflag` backend ships immediately after.
 
+## Package layout
+
+Decided: the `pflag` backend ships in its own package,
+`github.com/suyono3484/confstruct/pflag`, rather than as another file in the
+root `confstruct` package alongside `env.go`/`file.go`/`map.go`/`override.go`.
+Application code ends up importing both packages, e.g.:
+
+```go
+import (
+    "github.com/suyono3484/confstruct"
+    cspflag "github.com/suyono3484/confstruct/pflag"
+    "github.com/spf13/pflag"
+)
+```
+
+The alias above is required in practice, not just style: the new package and
+`github.com/spf13/pflag` both are named `pflag`, so any file importing both
+needs to alias one of them.
+
+This decision has a direct consequence for Phases 2 and 3 as currently
+drafted: both assume `pflagBackend` lives inside package `confstruct` and
+satisfies the unexported `fieldAwareBackend` and (proposed)
+`nameCollisionBackend` interfaces. Go requires an unexported interface
+method to be declared in the *same* package as the implementing type for
+the method sets to match, so a `pflagBackend` type living in the new
+`pflag` package cannot satisfy either interface as drafted today. Resolving
+this — by exporting a new hook, introducing a shared internal package, or
+some other mechanism — is now open design work blocking Phase 2/3, not yet
+decided. See the note in each affected phase document.
+
 ## Phases
 
 | Phase | Change | Touches existing backends? | Depends on |

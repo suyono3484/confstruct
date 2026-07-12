@@ -15,6 +15,30 @@ it up against every backend in the same recursive step — there is no
 existing pass that first collects every entry field's path and tag, across
 the whole tree, before backends are consulted.
 
+**Package layout (decided) — blocker for this phase as drafted:** the
+`pflag` backend now lives in its own package,
+`github.com/suyono3484/confstruct/pflag`, not in package `confstruct` (see
+[pflag-integration.md#package-layout](pflag-integration.md#package-layout)).
+Everything below — `nameCollisionBackend` as an *unexported* interface in
+`confstruct.go`, satisfied by `pflagBackend.checkNames` — assumes the two
+types are declared in the same package. Go requires an unexported interface
+method to be declared in the same package as the interface for a type to
+satisfy it, so a `pflagBackend` defined in package `pflag` cannot implement
+`nameCollisionBackend` as written here. This phase cannot proceed exactly as
+drafted; it needs one of:
+
+- exporting `nameCollisionBackend` (and `fieldPath`, since it appears in the
+  method signature) from `confstruct`, or
+- some other cross-package extension mechanism.
+
+This is new open design work created by the package-layout decision, not
+resolved by this document. The rest of this phase — the traversal shape,
+the scoping rules, the test matrix — is unaffected and still describes the
+intended behavior; only the *mechanism* by which `pflagBackend` hooks into
+`Populate`'s pre-pass needs to change from what's sketched in
+[2.1](#21-new-optional-backend-interface) and
+[2.4](#24-pflagbackendchecknames) below.
+
 ## Tracker
 
 | Step | Status | Notes |
@@ -28,6 +52,10 @@ the whole tree, before backends are consulted.
 Status values: `Not started`, `In progress`, `Done`.
 
 ## 2.1 New optional `Backend` interface
+
+*(See the package-layout note above — this sketch predates the decision to
+put `pflagBackend` in its own package, so it needs an exported or otherwise
+cross-package-satisfiable mechanism instead of an unexported interface.)*
 
 Add to `confstruct.go`, next to `fieldAwareBackend`:
 
@@ -108,6 +136,10 @@ watch to cancel.
 
 ## 2.4 `pflagBackend.checkNames`
 
+*(Same caveat as [2.1](#21-new-optional-backend-interface): `pflagBackend`
+now lives in package `pflag`, so this method can only exist as sketched if
+`nameCollisionBackend` becomes satisfiable across a package boundary.)*
+
 Because this pre-pass already has to compute `pflagName` for every field to
 group collisions, have it also surface invalid-tag errors here rather than
 deferring every one of them to the per-field `lookupField` call later: this
@@ -158,7 +190,14 @@ nondeterministic-output bugs once (see recent commit `91026bb`), so treat
 map-iteration order as a footgun by default here, not an oversight to catch
 later.
 
-## 2.5 Tests — in `confstruct_test.go` or a new `pflag_test.go`
+## 2.5 Tests — in `confstruct_test.go` or a new `pflag/pflag_test.go`
+
+Now that `pflagBackend` lives in its own package (see the package-layout
+note above), split by what's actually being tested: the generic pre-pass
+wiring in `Populate` (2.2/2.3) belongs in `confstruct_test.go` alongside its
+existing tests, while `pflagBackend`'s own name-collision logic (2.4)
+belongs in `pflag/pflag_test.go`, once Phase 2's cross-package mechanism is
+settled.
 
 Directly from [the examples
 table](pflag-integration.md#examples) and [the rules

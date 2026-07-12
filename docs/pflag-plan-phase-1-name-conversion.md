@@ -13,20 +13,29 @@ conversion](pflag-integration.md#identifier-to-flag-name-conversion) and
 logic, no `pflag` dependency yet — this can be written and fully unit-tested
 before touching `go.mod`.
 
+**Package layout (decided):** this file lives in the new
+`github.com/suyono3484/confstruct/pflag` package (see
+[pflag-integration.md#package-layout](pflag-integration.md#package-layout)),
+not in package `confstruct`. Update the sketch below accordingly. Unlike
+Phases 2 and 3, this phase is unaffected by the deeper consequence of that
+decision — none of `splitIdentifierWords`, `derivedPFlagName`, or
+`pflagName` touch any unexported `confstruct` symbol, so this phase's plan
+otherwise stands as written, just under `package pflag`.
+
 ## Tracker
 
 | Step | Status | Notes |
 | --- | --- | --- |
-| [1.1 New file `pflag_name.go`](#11-new-file-pflag_namego) | Not started | |
+| [1.1 New file `pflag/pflag_name.go`](#11-new-file-pflagpflag_namego) | Not started | |
 | [1.2 Word-splitting algorithm](#12-word-splitting-algorithm-state-machine) | Not started | |
 | [1.3 Tests](#13-tests--pflag_name_testgo) | Not started | |
 
 Status values: `Not started`, `In progress`, `Done`.
 
-## 1.1 New file `pflag_name.go`
+## 1.1 New file `pflag/pflag_name.go`
 
 ```go
-package confstruct
+package pflag
 
 // pflagNameTag is the struct tag an entry field uses to override its
 // derived long flag name.

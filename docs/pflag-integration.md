@@ -21,10 +21,16 @@ string-keyed configuration reads.
 
 ## Recommended direction
 
-Add an optional static backend, tentatively named `PFlag`:
+Add an optional static backend, tentatively named `PFlag`, living in its own
+package, `github.com/suyono3484/confstruct/pflag`, rather than as another
+file in the root `confstruct` package alongside `env.go`/`file.go`. See
+[Package layout](#package-layout) below for why and what it implies for the
+proposed implementation outline.
 
 ```go
-func PFlag(flags *pflag.FlagSet) Backend
+package pflag
+
+func PFlag(flags *pflag.FlagSet) confstruct.Backend
 ```
 
 The backend owns no parsing and performs no writes. The application defines
@@ -32,6 +38,12 @@ and parses its flags, adds the resulting backend as its highest-precedence
 layer, and then calls `Populate`.
 
 ```go
+import (
+    "github.com/suyono3484/confstruct"
+    cspflag "github.com/suyono3484/confstruct/pflag"
+    "github.com/spf13/pflag"
+)
+
 type Config struct {
     confstruct.Meta
 
@@ -53,7 +65,7 @@ func main() {
     cfg.AddLayer(confstruct.Map(defaultValues))
     cfg.AddLayer(fileBackend)
     cfg.AddLayer(envBackend)
-    cfg.AddLayer(confstruct.PFlag(flags)) // explicitly supplied CLI flags win
+    cfg.AddLayer(cspflag.PFlag(flags)) // explicitly supplied CLI flags win
 
     if err := confstruct.Populate(context.Background(), &cfg); err != nil {
         log.Fatal(err)
@@ -65,6 +77,30 @@ func main() {
 are intended to win. Like `Map`, it is static and may technically be used as
 the first layer, but that will normally leave entries unset because an
 unprovided flag is absent rather than a default.
+
+## Package layout
+
+Decided: the `pflag` backend ships as its own package,
+`github.com/suyono3484/confstruct/pflag`, not as another file in the root
+`confstruct` package. Two direct consequences:
+
+- Any file importing both this new package and `github.com/spf13/pflag`
+  needs an import alias, since both packages are named `pflag` — see the
+  `cspflag` alias used above and in the [Recommended
+  direction](#recommended-direction) example.
+- The [Proposed implementation outline](#proposed-implementation-outline)
+  below, as written, has `pflagBackend` satisfy the unexported
+  `fieldAwareBackend` hook and the Phase-2-proposed unexported
+  `nameCollisionBackend` interface. Go only allows an unexported interface
+  method to be satisfied by a method declared in the *same* package as the
+  interface, so a `pflagBackend` type living in the new `pflag` package
+  cannot implement either as drafted. Making that outline work — exporting
+  a new hook from `confstruct`, an internal shared package, or some other
+  mechanism — is open design work introduced by this decision, not yet
+  resolved. See the equivalent note in
+  [pflag-plan-phase-2-duplicate-detection.md](pflag-plan-phase-2-duplicate-detection.md)
+  and
+  [pflag-plan-phase-3-backend.md](pflag-plan-phase-3-backend.md).
 
 ## Semantics
 
@@ -156,7 +192,9 @@ schema and accommodates the common short-name cases.
 ## Proposed implementation outline
 
 `PFlag` can reuse the existing private `fieldAwareBackend` hook, as `Env` and
-`File` do:
+`File` do — **but see [Package layout](#package-layout): this only works if
+`pflagBackend` lives inside package `confstruct`, which is no longer the
+decided location, so this outline's mechanism needs revisiting**:
 
 ```go
 type pflagBackend struct {
@@ -236,6 +274,10 @@ themselves are no longer open.
    design (scope, aggregation, and error format). This is a `Populate`-level
    change, not `pflag`-specific, so it lands as a prerequisite rather than
    part of this backend's own diff.
+6. **Package layout.** Decided: the backend lives in its own package,
+   `github.com/suyono3484/confstruct/pflag`, not in the root `confstruct`
+   package. See [Package layout](#package-layout) for the rationale and the
+   open mechanism question it raises for Phases 2 and 3.
 
 ### Identifier-to-flag-name conversion
 

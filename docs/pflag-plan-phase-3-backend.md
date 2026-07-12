@@ -11,12 +11,23 @@ implementation outline](pflag-integration.md#proposed-implementation-outline),
 [Semantics](pflag-integration.md#semantics), [Type
 support](pflag-integration.md#type-support).
 
+**Package layout (decided):** `pflagBackend` and this whole file live in the
+new `github.com/suyono3484/confstruct/pflag` package (see
+[pflag-integration.md#package-layout](pflag-integration.md#package-layout)),
+not in package `confstruct`. The sketch in [3.2](#32-new-file-pflagpflaggo) below
+predates that decision and needs updating: it uses `package confstruct` and
+calls the unexported `fieldAwareBackend`/`backendErr` hooks directly, none
+of which a separate package can do. This phase depends on however
+[Phase 2](pflag-plan-phase-2-duplicate-detection.md#package-layout-decided--blocker-for-this-phase-as-drafted)
+resolves the cross-package mechanism question — treat the code below as the
+shape of the intent, not a buildable sketch, until that's settled.
+
 ## Tracker
 
 | Step | Status | Notes |
 | --- | --- | --- |
 | [3.1 Dependency](#31-dependency) | Not started | |
-| [3.2 New file `pflag.go`](#32-new-file-pflaggo) | Not started | |
+| [3.2 New file `pflag/pflag.go`](#32-new-file-pflagpflaggo) | Not started | |
 | [3.3 Type coercion](#33-type-coercion) | Not started | |
 | [3.4 Tests](#34-tests--pflag_testgo) | Not started | |
 | [3.5 Godoc](#35-godoc) | Not started | |
@@ -32,26 +43,32 @@ go get github.com/spf13/pflag
 Adds a direct (non-indirect) requirement to `go.mod`. No Cobra dependency —
 Cobra exposes `*pflag.FlagSet` directly via `cmd.Flags()`.
 
-## 3.2 New file `pflag.go`
+## 3.2 New file `pflag/pflag.go`
 
 Mirrors `env.go`'s shape (license header, package, doc comment on the
-constructor):
+constructor) as far as style goes, but note it is `package pflag`, in its
+own directory, importing `confstruct` rather than being part of it — see
+the package-layout note above. The unexported `backendErr` call below is a
+placeholder for whatever cross-package mechanism Phase 2 settles on (an
+exported equivalent, most likely); it will not compile as an unexported
+`confstruct` symbol referenced from another package.
 
 ```go
-package confstruct
+package pflag
 
 import (
 	"fmt"
 	"reflect"
 
-	"github.com/spf13/pflag"
+	"github.com/suyono3484/confstruct"
+	spfpflag "github.com/spf13/pflag"
 )
 
 // PFlagBackendName is the Name() identifier for a PFlag backend.
 const PFlagBackendName = "pflag"
 
 type pflagBackend struct {
-	flags *pflag.FlagSet
+	flags *spfpflag.FlagSet
 }
 
 // PFlag returns a Backend that reads explicitly-provided command-line flags
@@ -63,14 +80,14 @@ type pflagBackend struct {
 // flag's declared default is not a configuration value and the entry falls
 // through to the next lower-precedence layer. See
 // docs/pflag-integration.md for the full design rationale.
-func PFlag(flags *pflag.FlagSet) Backend {
+func PFlag(flags *spfpflag.FlagSet) confstruct.Backend {
 	return &pflagBackend{flags: flags}
 }
 
 func (b *pflagBackend) Name() string { return PFlagBackendName }
 
 func (b *pflagBackend) Describe() string {
-	if b.flags == pflag.CommandLine {
+	if b.flags == spfpflag.CommandLine {
 		return "command-line"
 	}
 	return b.flags.Name()
@@ -130,7 +147,13 @@ Confirm during testing that:
 - `--verbose=false` and `--db-port=0` remain `Changed == true` and override
   a lower layer's `true`/non-zero value.
 
-## 3.4 Tests — `pflag_test.go`
+## 3.4 Tests — `pflag/pflag_test.go`
+
+Run with `go test github.com/suyono3484/confstruct/pflag`, following the
+project's per-package test convention in
+[AGENTS.md](../AGENTS.md#testing-conventions) — this is now a second
+package with its own test target, distinct from
+`go test github.com/suyono3484/confstruct`.
 
 Full matrix from [Test matrix for an
 implementation](pflag-integration.md#test-matrix-for-an-implementation):
@@ -165,7 +188,10 @@ implementation](pflag-integration.md#test-matrix-for-an-implementation):
 
 ## 3.5 Godoc
 
-Package-level doc comment addition in `confstruct.go`'s doc block
+Add `pflag/pflag.go`'s own package-level doc comment (this package now
+needs one, since it's a separate importable unit rather than a file inside
+`confstruct`'s existing doc block). Also update the package-level doc
+comment in `confstruct.go`'s doc block
 (`confstruct.go:15-75`) mentioning `PFlag` alongside `Env`/`File` once it
 ships, matching how `cs.env`/`cs.file.segment-alias` are already listed at
 `confstruct.go:60-61`.
