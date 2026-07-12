@@ -178,6 +178,30 @@ for conversion errors with no further changes: `initSlots` re-runs on retry
 and resets every slot, so a corrected backend value on the next `Populate`
 call starts clean.
 
+**Partial results on failure are kept, not rolled back.** Because
+conversion errors aggregate instead of stopping the walk, a failed
+`Populate` call can leave some fields resolved (`IsSet()==true`, `Value()`
+populated) while others remain unset — whichever fields' own coercion
+happened to succeed before the walk finished. This is intentional: the only
+contract callers get is "don't trust the struct until `err == nil`," not
+"an error means nothing was touched." A rollback-to-zero-state alternative
+(undo every field touched during a failed walk) was considered and rejected
+— see [`pflag-plan-phase-0-code-review.md` finding
+1](pflag-plan-phase-0-code-review.md#1-successful-fields-resolve-and-notify-before-a-failed-populate-call-returns)
+for the analysis. It would have discarded correctly-resolved data for no
+benefit to the dominant abort-on-error usage pattern, and actively hurt the
+retry-capable case (fix-one-backend-and-call-Populate-again) by forcing
+unnecessary re-resolution of fields that were already correct.
+
+The same staleness can also happen within a single field: if a
+higher-precedence layer's value fails coercion, resolution never reaches
+that layer, so the field is left showing whichever lower-precedence layer's
+value last resolved successfully — indistinguishable from that
+higher-precedence layer never having set the field at all. See [finding
+5](pflag-plan-phase-0-code-review.md#5-no-test-for-earlier-layer-succeeds-later-layer-fails-ordering)
+for the mechanism and a pinned regression test
+(`TestPopulate_higherLayerConversionErrorLeavesLowerLayerValue`).
+
 ### Avoid a doubled `"confstruct: "` prefix
 
 `coerce` and `parseString` already prefix their own errors (`confstruct.go:351,

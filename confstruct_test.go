@@ -159,6 +159,12 @@ func TestPopulate_numericOverflowRejected(t *testing.T) {
 			t.Errorf("Populate error %q: missing mention of field %q", err.Error(), field)
 		}
 	}
+	if cfg.Small.IsSet() || cfg.USmall.IsSet() || cfg.Neg.IsSet() || cfg.Narrow.IsSet() {
+		t.Error("expected all overflowing fields to remain IsSet=false")
+	}
+	if cfg.Small.Value() != 0 || cfg.USmall.Value() != 0 || cfg.Neg.Value() != 0 || cfg.Narrow.Value() != 0 {
+		t.Error("expected all overflowing fields to keep their zero value")
+	}
 }
 
 func TestPopulate_float32OverflowRejected(t *testing.T) {
@@ -176,6 +182,12 @@ func TestPopulate_float32OverflowRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "Big") {
 		t.Errorf("Populate error %q: missing mention of field %q", err.Error(), "Big")
+	}
+	if cfg.Big.IsSet() {
+		t.Error("Big: IsSet=true after float32 overflow, want false")
+	}
+	if cfg.Big.Value() != 0 {
+		t.Errorf("Big: got %v, want zero value", cfg.Big.Value())
 	}
 }
 
@@ -349,16 +361,33 @@ func TestPopulate_lowerLayerConversionErrorReportedEvenWhenOverridden(t *testing
 	}
 }
 
+func TestPopulate_higherLayerConversionErrorLeavesLowerLayerValue(t *testing.T) {
+	var cfg testConfig
+	cfg.AddLayer(Map(map[string]any{"Port": 8080}))         // lower-precedence: valid
+	cfg.AddLayer(Map(map[string]any{"Port": "not-a-port"})) // higher-precedence: invalid, would have overridden
+	err := Populate(context.Background(), &cfg)
+	if err == nil {
+		t.Fatal("expected Populate error from the higher-precedence layer's bad value, got nil")
+	}
+	if !cfg.Port.IsSet() {
+		t.Error("Port: IsSet=false, want true (stale lower-layer value retained)")
+	}
+	if cfg.Port.Value() != 8080 {
+		t.Errorf("Port: got %v, want stale lower-layer value 8080", cfg.Port.Value())
+	}
+}
+
 func TestPopulate_retryAfterConversionFailure(t *testing.T) {
 	var cfg testConfig
-	backend := &mutableValueBackend{field: "Port", value: "not-a-port"}
-	cfg.AddLayer(backend)
+	cfg.AddLayer(Map(map[string]any{"Port": 0})) // non-watchable base layer, required below Override
+	ob := Override(map[string]any{"Port": "not-a-port"})
+	cfg.AddLayer(ob)
 
 	if err := Populate(context.Background(), &cfg); err == nil {
 		t.Fatal("expected first Populate call to fail due to conversion error")
 	}
 
-	backend.value = 9090
+	ob.Set("Port", 9090)
 
 	if err := Populate(context.Background(), &cfg); err != nil {
 		t.Fatalf("expected retry on the same struct to succeed once the backend value is fixed, got %v", err)
@@ -523,6 +552,23 @@ func TestPopulate_watchableUpdate(t *testing.T) {
 	}
 }
 
+func TestPopulate_watchSkippedAfterEarlierCoercionFailure(t *testing.T) {
+	var cfg testConfig
+	cfg.AddLayer(Map(map[string]any{
+		"Name": 123, // int into StringEntry — coercion failure, accumulated in errs
+	}))
+	w := &fakeWatchable{values: map[string]any{"Port": 8080}}
+	cfg.AddLayer(w)
+
+	err := Populate(context.Background(), &cfg)
+	if err == nil {
+		t.Fatal("expected Populate error from Name's type mismatch")
+	}
+	if _, watched := w.hooks["Port"]; watched {
+		t.Error("Port: Watch registered on fakeWatchable after an earlier field's coercion failure, want skipped")
+	}
+}
+
 // fakeWatchable is a test WatchableBackend that lets tests trigger hook calls directly.
 type fakeWatchable struct {
 	values map[string]any
@@ -579,24 +625,6 @@ func (b *toggleErrBackend) Lookup(path string) (any, bool, error) {
 
 func (b *toggleErrBackend) Name() string     { return "toggle" }
 func (b *toggleErrBackend) Describe() string { return "" }
-
-// mutableValueBackend reports a single, mutable value for one field, letting
-// a test simulate a bad value being fixed in place and Populate retried
-// against the same backend instance.
-type mutableValueBackend struct {
-	field string
-	value any
-}
-
-func (b *mutableValueBackend) Lookup(path string) (any, bool, error) {
-	if path != b.field {
-		return nil, false, nil
-	}
-	return b.value, true, nil
-}
-
-func (b *mutableValueBackend) Name() string     { return "mutable" }
-func (b *mutableValueBackend) Describe() string { return "" }
 
 func (f *fakeWatchable) Lookup(path string) (any, bool, error) {
 	v, ok := f.values[path]
@@ -687,5 +715,41 @@ func TestOnResolve_NotFiredWhenWatchedBackendIsNotWinner(t *testing.T) {
 	}
 	if got := cfg.Name.Value(); got != "high" {
 		t.Fatalf("Name after low-layer Set calls: got %q, want %q (high should still win)", got, "high")
+	}
+}
+
+// TestOnResolve_NotFiredWhenPopulateFails is the regression repro for
+// docs/pflag-plan-phase-0-code-review.md finding 1: Name resolves
+// successfully before Port's coercion fails later in the same walk. OnResolve
+// must not fire for Name (or anything else) since Populate as a whole never
+// reaches stateDone, even though Name itself stays resolved and readable —
+// see the "partial results are kept, not rolled back" contract documented on
+// Populate.
+func TestOnResolve_NotFiredWhenPopulateFails(t *testing.T) {
+	var cfg testConfig
+	var count atomic.Int64
+	cfg.OnResolve(func(key string, value any, backendName, backendDesc string) {
+		count.Add(1)
+	})
+
+	cfg.AddLayer(Map(map[string]any{
+		"Name": "good-value",
+		"Port": "not-a-port",
+	}))
+
+	err := Populate(context.Background(), &cfg)
+	if err == nil {
+		t.Fatal("expected Populate error for unparseable Port, got nil")
+	}
+
+	if got := count.Load(); got != 0 {
+		t.Fatalf("OnResolve fire count after failed Populate: got %d, want 0", got)
+	}
+	if !cfg.Name.IsSet() || cfg.Name.Value() != "good-value" {
+		t.Fatalf("Name after failed Populate: IsSet=%v Value=%q, want IsSet=true Value=%q (partial results stay resolved)",
+			cfg.Name.IsSet(), cfg.Name.Value(), "good-value")
+	}
+	if cfg.Port.IsSet() {
+		t.Fatal("Port after failed Populate: IsSet=true, want false (coercion failed)")
 	}
 }

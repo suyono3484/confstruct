@@ -132,8 +132,13 @@ type fieldAwareBackend interface {
 // populateState tracks the lifecycle of a single Meta across Populate calls.
 // A struct starts stateIdle, moves to stateRunning while a Populate call owns
 // it, and only reaches the terminal stateDone once that call fully succeeds.
-// A failed call releases the claim back to stateIdle so a subsequent Populate
-// call can retry; only a successful call permanently blocks further calls.
+// A failed call releases the claim back to stateIdle instead of permanently
+// locking the struct — only a successful call does that. This is not an
+// automatic-retry mechanism: most callers should treat a Populate error as
+// fatal. The allowance exists for callers that construct config
+// incrementally (a test isolating one backend, a tool letting a user correct
+// a bad source in place) and want to call Populate again on the same struct
+// instance once the cause is fixed.
 const (
 	stateIdle uint32 = iota
 	stateRunning
@@ -421,9 +426,23 @@ func isNumericKind(k reflect.Kind) bool {
 // pointer to a struct embedding confstruct.Meta with at least one backend
 // registered; the lowest-priority backend (first added) must not be a
 // WatchableBackend. A successful Populate call may only happen once per config
-// struct; a call that returns an error does not consume that one-shot budget
-// and the same struct may be passed to Populate again (with corrected
-// backends) once the cause of the failure has been addressed.
+// struct. A call that returns an error does not permanently lock the struct
+// the way a successful call does, so the same struct remains valid to pass to
+// Populate again after the cause of the failure has been addressed. This is
+// not an automatic-retry mechanism, and most callers — e.g. a service loading
+// its config once at startup — should treat a non-nil error as fatal. The
+// allowance exists for callers that construct config incrementally, such as a
+// test that isolates one backend or a tool that lets a user correct a bad
+// source in place, without being forced to start over with a new struct
+// instance.
+//
+// A failed call does not undo work it already did: any field whose value was
+// successfully resolved before the failure is left resolved and readable
+// (IsSet and Value reflect it) even though Populate returns a non-nil error.
+// The only contract callers can rely on is that a non-nil error means the
+// struct as a whole is not fully and correctly populated — not that no field
+// in it was touched. Do not read cfgStruct after a failed call without first
+// checking the error.
 func Populate(ctx context.Context, cfgStruct any) error {
 	rv := reflect.ValueOf(cfgStruct)
 	if rv.Kind() != reflect.Pointer || rv.Elem().Kind() != reflect.Struct {
@@ -456,17 +475,17 @@ func Populate(ctx context.Context, cfgStruct any) error {
 	meta.watchCancel = cancelWatches
 
 	var errs []error
-	if err := walkAndInject(watchCtx, sv, meta, "", nil, &errs); err != nil {
+	var pending []func()
+	err := walkAndInject(watchCtx, sv, meta, "", nil, &errs, &pending)
+	if err != nil || len(errs) > 0 {
 		cancelWatches()
 		meta.watchCancel = nil
 		meta.state.Store(stateIdle)
-		return err
+		return errors.Join(append(errs, err)...)
 	}
-	if len(errs) > 0 {
-		cancelWatches()
-		meta.watchCancel = nil
-		meta.state.Store(stateIdle)
-		return errors.Join(errs...)
+
+	for _, notify := range pending {
+		notify()
 	}
 
 	meta.state.Store(stateDone)
@@ -544,7 +563,7 @@ func collectUnset(sv reflect.Value, prefix string, unset *[]string) error {
 	return nil
 }
 
-func walkAndInject(ctx context.Context, sv reflect.Value, meta *Meta, prefix string, chain []reflect.StructField, errs *[]error) error {
+func walkAndInject(ctx context.Context, sv reflect.Value, meta *Meta, prefix string, chain []reflect.StructField, errs *[]error, pending *[]func()) error {
 	st := sv.Type()
 	for i := 0; i < st.NumField(); i++ {
 		f := st.Field(i)
@@ -587,19 +606,25 @@ func walkAndInject(ctx context.Context, sv reflect.Value, meta *Meta, prefix str
 				if err := lm.setSlot(idx, v, ok); err != nil {
 					*errs = append(*errs, fmt.Errorf("confstruct: backend %q field %q: %w", b.Name(), key, err))
 				}
-				if wb, watchable := b.(WatchableBackend); watchable {
-					wb.Watch(ctx, key, func(v any, ok bool) {
-						_ = lm.setSlot(idx, v, ok)
-						notify()
-					})
+				if len(*errs) == 0 {
+					if wb, watchable := b.(WatchableBackend); watchable {
+						wb.Watch(ctx, key, func(v any, ok bool) {
+							// Live-update coercion failures are intentionally discarded:
+							// Populate has already returned, so there's no error path to
+							// report through. Entry keeps its last good value. See
+							// docs/populate-error-handling.md#scope-initial-population-only.
+							_ = lm.setSlot(idx, v, ok)
+							notify()
+						})
+					}
 				}
 			}
-			notify()
+			*pending = append(*pending, notify)
 			continue
 		}
 
 		if f.Type.Kind() == reflect.Struct {
-			if err := walkAndInject(ctx, fv, meta, key, fieldChain, errs); err != nil {
+			if err := walkAndInject(ctx, fv, meta, key, fieldChain, errs, pending); err != nil {
 				return err
 			}
 		}
