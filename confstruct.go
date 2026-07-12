@@ -76,6 +76,7 @@ package confstruct
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -114,7 +115,7 @@ type ResolveHook func(key string, value any, backendName, backendDesc string)
 type layerManager interface {
 	initSlots(n int)
 	initSlotMeta(index int, name, desc string)
-	setSlot(index int, v any, ok bool)
+	setSlot(index int, v any, ok bool) error
 	resolvedState() (value any, backendName, backendDesc string, isSet bool)
 	hasChangedSinceNotify() (value any, name, desc string, isSet bool, changed bool)
 }
@@ -131,8 +132,17 @@ type fieldAwareBackend interface {
 // populateState tracks the lifecycle of a single Meta across Populate calls.
 // A struct starts stateIdle, moves to stateRunning while a Populate call owns
 // it, and only reaches the terminal stateDone once that call fully succeeds.
-// A failed call releases the claim back to stateIdle so a subsequent Populate
-// call can retry; only a successful call permanently blocks further calls.
+// A failed call releases the claim back to stateIdle instead of permanently
+// locking the struct — only a successful call does that. See Populate's doc
+// comment for why a failed call is retryable and what that retry allowance
+// does and doesn't promise callers.
+//
+// state has a second reader beyond Populate itself: the WatchableBackend
+// push closure in walkAndInject checks state == stateDone before notifying,
+// so a live push that arrives while Populate is still walking later fields
+// doesn't fire OnResolve ahead of a call that goes on to fail. Any future
+// change to these transitions (a new state, a different Store ordering)
+// must keep that read correct too.
 const (
 	stateIdle uint32 = iota
 	stateRunning
@@ -192,13 +202,13 @@ func (e *entry[T]) initSlotMeta(index int, name, desc string) {
 	e.slots[index].backendDesc = desc
 }
 
-func (e *entry[T]) setSlot(index int, v any, ok bool) {
+func (e *entry[T]) setSlot(index int, v any, ok bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if ok {
 		coerced, err := coerce[T](v)
 		if err != nil {
-			return
+			return err
 		}
 		e.slots[index].value = coerced
 		e.slots[index].ok = true
@@ -207,6 +217,7 @@ func (e *entry[T]) setSlot(index int, v any, ok bool) {
 		e.slots[index].ok = false
 	}
 	e.resolveUnderLock()
+	return nil
 }
 
 func (e *entry[T]) resolveUnderLock() {
@@ -348,14 +359,14 @@ func coerce[T any](v any) (T, error) {
 		// strconv, with a single implementation shared by both call sites.
 		result, err := parseString[T](formatNumericValue(rv), target)
 		if err != nil {
-			return zero, fmt.Errorf("confstruct: value %v overflows %s", v, target)
+			return zero, fmt.Errorf("value %v overflows %s", v, target)
 		}
 		return result, nil
 	}
 	if rv.Kind() == reflect.String {
 		return parseString[T](rv.String(), target)
 	}
-	return zero, fmt.Errorf("confstruct: cannot convert %T to %s", v, target)
+	return zero, fmt.Errorf("cannot convert %T to %s", v, target)
 }
 
 // formatNumericValue formats a numeric reflect.Value to its canonical decimal
@@ -379,29 +390,29 @@ func parseString[T any](s string, target reflect.Type) (T, error) {
 	case reflect.Bool:
 		b, err := strconv.ParseBool(s)
 		if err != nil {
-			return zero, fmt.Errorf("confstruct: cannot parse %q as bool", s)
+			return zero, fmt.Errorf("cannot parse %q as bool", s)
 		}
 		return any(b).(T), nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		n, err := strconv.ParseInt(s, 10, target.Bits())
 		if err != nil {
-			return zero, fmt.Errorf("confstruct: cannot parse %q as %s", s, target)
+			return zero, fmt.Errorf("cannot parse %q as %s", s, target)
 		}
 		return reflect.ValueOf(n).Convert(target).Interface().(T), nil
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		n, err := strconv.ParseUint(s, 10, target.Bits())
 		if err != nil {
-			return zero, fmt.Errorf("confstruct: cannot parse %q as %s", s, target)
+			return zero, fmt.Errorf("cannot parse %q as %s", s, target)
 		}
 		return reflect.ValueOf(n).Convert(target).Interface().(T), nil
 	case reflect.Float32, reflect.Float64:
 		n, err := strconv.ParseFloat(s, target.Bits())
 		if err != nil {
-			return zero, fmt.Errorf("confstruct: cannot parse %q as %s", s, target)
+			return zero, fmt.Errorf("cannot parse %q as %s", s, target)
 		}
 		return reflect.ValueOf(n).Convert(target).Interface().(T), nil
 	}
-	return zero, fmt.Errorf("confstruct: cannot convert string to %s", target)
+	return zero, fmt.Errorf("cannot convert string to %s", target)
 }
 
 func isNumericKind(k reflect.Kind) bool {
@@ -419,9 +430,23 @@ func isNumericKind(k reflect.Kind) bool {
 // pointer to a struct embedding confstruct.Meta with at least one backend
 // registered; the lowest-priority backend (first added) must not be a
 // WatchableBackend. A successful Populate call may only happen once per config
-// struct; a call that returns an error does not consume that one-shot budget
-// and the same struct may be passed to Populate again (with corrected
-// backends) once the cause of the failure has been addressed.
+// struct. A call that returns an error does not permanently lock the struct
+// the way a successful call does, so the same struct remains valid to pass to
+// Populate again after the cause of the failure has been addressed. This is
+// not an automatic-retry mechanism, and most callers — e.g. a service loading
+// its config once at startup — should treat a non-nil error as fatal. The
+// allowance exists for callers that construct config incrementally, such as a
+// test that isolates one backend or a tool that lets a user correct a bad
+// source in place, without being forced to start over with a new struct
+// instance.
+//
+// A failed call does not undo work it already did: any field whose value was
+// successfully resolved before the failure is left resolved and readable
+// (IsSet and Value reflect it) even though Populate returns a non-nil error.
+// The only contract callers can rely on is that a non-nil error means the
+// struct as a whole is not fully and correctly populated — not that no field
+// in it was touched. Do not read cfgStruct after a failed call without first
+// checking the error.
 func Populate(ctx context.Context, cfgStruct any) error {
 	rv := reflect.ValueOf(cfgStruct)
 	if rv.Kind() != reflect.Pointer || rv.Elem().Kind() != reflect.Struct {
@@ -453,14 +478,31 @@ func Populate(ctx context.Context, cfgStruct any) error {
 	watchCtx, cancelWatches := context.WithCancel(ctx)
 	meta.watchCancel = cancelWatches
 
-	if err := walkAndInject(watchCtx, sv, meta, "", nil); err != nil {
+	var errs []error
+	var pending []func()
+	err := walkAndInject(watchCtx, sv, meta, "", nil, &errs, &pending)
+	if err != nil || len(errs) > 0 {
 		cancelWatches()
 		meta.watchCancel = nil
 		meta.state.Store(stateIdle)
-		return err
+		return errors.Join(append(errs, err)...)
 	}
 
+	// Mark stateDone before flushing the initial notifies, not after: a
+	// concurrent watch push that arrived during the walk above (and so
+	// skipped its own notify(), per the stateDone check in the Watch
+	// closure) must be able to fire on its own the instant Populate is
+	// known to have succeeded, even if that happens to land in the middle
+	// of this flush loop. hasChangedSinceNotify compares resolved state
+	// rather than counting events, so a field notified both here and by a
+	// concurrent push is harmless — the second call just reports
+	// changed=false.
 	meta.state.Store(stateDone)
+
+	for _, notify := range pending {
+		notify()
+	}
+
 	return nil
 }
 
@@ -535,7 +577,14 @@ func collectUnset(sv reflect.Value, prefix string, unset *[]string) error {
 	return nil
 }
 
-func walkAndInject(ctx context.Context, sv reflect.Value, meta *Meta, prefix string, chain []reflect.StructField) error {
+// backendErr wraps a backend-scoped failure in the "confstruct: backend %q
+// <action> %q: <cause>" form shared by both the hard Lookup-error and soft
+// coercion-error call sites in walkAndInject.
+func backendErr(action string, b Backend, key string, err error) error {
+	return fmt.Errorf("confstruct: backend %q %s %q: %w", b.Name(), action, key, err)
+}
+
+func walkAndInject(ctx context.Context, sv reflect.Value, meta *Meta, prefix string, chain []reflect.StructField, errs *[]error, pending *[]func()) error {
 	st := sv.Type()
 	for i := 0; i < st.NumField(); i++ {
 		f := st.Field(i)
@@ -573,22 +622,41 @@ func walkAndInject(ctx context.Context, sv reflect.Value, meta *Meta, prefix str
 				lm.initSlotMeta(idx, b.Name(), b.Describe())
 				v, ok, err := lookupBackendValue(b, key, fieldChain)
 				if err != nil {
-					return fmt.Errorf("confstruct: backend %q lookup %q: %w", b.Name(), key, err)
+					return backendErr("lookup", b, key, err)
 				}
-				lm.setSlot(idx, v, ok)
-				if wb, watchable := b.(WatchableBackend); watchable {
-					wb.Watch(ctx, key, func(v any, ok bool) {
-						lm.setSlot(idx, v, ok)
-						notify()
-					})
+				if err := lm.setSlot(idx, v, ok); err != nil {
+					*errs = append(*errs, backendErr("field", b, key, err))
+				}
+				if len(*errs) == 0 {
+					if wb, watchable := b.(WatchableBackend); watchable {
+						wb.Watch(ctx, key, func(v any, ok bool) {
+							// Live-update coercion failures are intentionally discarded:
+							// Populate has already returned, so there's no error path to
+							// report through. Entry keeps its last good value. See
+							// docs/populate-error-handling.md#scope-initial-population-only.
+							_ = lm.setSlot(idx, v, ok)
+							// A push can arrive while this Populate call is still walking
+							// later fields (e.g. a concurrent Override.Set from another
+							// goroutine), before success/failure is known. Only notify once
+							// Populate has actually reached stateDone: notifying here on a
+							// call that goes on to fail would fire OnResolve for a struct
+							// Populate reports as not populated. If Populate does succeed,
+							// this field's entry in the pending-notify flush below picks up
+							// the pushed value (hasChangedSinceNotify compares state, not
+							// events, so nothing is lost by skipping this one).
+							if meta.state.Load() == stateDone {
+								notify()
+							}
+						})
+					}
 				}
 			}
-			notify()
+			*pending = append(*pending, notify)
 			continue
 		}
 
 		if f.Type.Kind() == reflect.Struct {
-			if err := walkAndInject(ctx, fv, meta, key, fieldChain); err != nil {
+			if err := walkAndInject(ctx, fv, meta, key, fieldChain, errs, pending); err != nil {
 				return err
 			}
 		}

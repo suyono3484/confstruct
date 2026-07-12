@@ -214,6 +214,30 @@ When a remote backend pushes an update for a field, the entry re-resolves across
 
 Each backend is independent. `confstruct` does not know or care how a backend retrieves or formats its values. Backends are fully swappable and independently testable.
 
+## Error handling
+
+`Populate`'s initial walk coerces every field's value from every registered backend into that entry's declared Go type. If a value fails to coerce — a malformed string, a numeric value that overflows the target type — `Populate` returns a non-nil error. It does not stop at the first failure: every field's conversion error, across the whole struct and every backend layer, is collected and returned together as one error.
+
+```go
+err := confstruct.Populate(ctx, &cfg)
+if err != nil {
+    // err may wrap more than one field's conversion failure; each fragment
+    // names its field and backend, e.g.:
+    //   confstruct: backend "env" field "Database.Port": cannot parse "abc" as int
+    log.Fatal(err)
+}
+```
+
+A backend layer's bad value is reported even if a higher-precedence layer would have overridden it anyway — a layer that claims to have a value for a field but supplies one that doesn't coerce is a genuine problem with that layer, independent of what ultimately wins resolution.
+
+**Partial results are kept on failure, not rolled back.** Because errors aggregate instead of stopping the walk, a failed `Populate` call can leave some fields resolved (`IsSet()` true, values populated) while others remain unset. The only contract callers can rely on is "don't trust the struct until `err == nil`" — not "an error means nothing was touched." Do not read `cfg` after a failed `Populate` call without checking the error first.
+
+**`Populate` remains retryable after a failure.** A non-nil error does not permanently lock the struct — the same instance can be passed to `Populate` again once the cause is fixed (a corrected env var, a fixed config file). This is not an automatic-retry mechanism; most callers — a service loading its config once at startup — should treat a non-nil error as fatal. The allowance exists for callers that construct config incrementally, such as a test isolating one backend or a tool that lets a user correct a bad source in place.
+
+**Live-update coercion failures stay silent, by design** — see [Watchable backends](#watchable-backends): a badly-typed value pushed after a successful `Populate` is ignored, and the entry keeps its last good value, rather than crashing a running application over one malformed update.
+
+For the full design rationale — why failures aggregate instead of failing fast, why partial results are kept rather than rolled back, and how a failed higher-precedence override can leave a same-field stale value from a lower layer — see [docs/populate-error-handling.md](docs/populate-error-handling.md).
+
 ## Backend interfaces
 
 ### Static backends
@@ -226,7 +250,7 @@ type Backend interface {
 }
 ```
 
-`Lookup` is called once per field during `Populate` and returns the value, a presence flag, and an error. If `Lookup` returns an error, `Populate` fails. The canonical path is built from the chain of Go struct field names leading to the entry:
+`Lookup` is called once per field during `Populate` and returns the value, a presence flag, and an error. If `Lookup` returns an error, `Populate` fails immediately. A value that `Lookup` successfully returns but that fails to *coerce* into the entry's declared type is a separate case — see [Error handling](#error-handling). The canonical path is built from the chain of Go struct field names leading to the entry:
 
 ```
 "ListenAddr"        // top-level field
@@ -256,7 +280,7 @@ type WatchableBackend interface {
 
 The context passed to `Populate` governs the lifetime of all watchers. When it is cancelled, backends should stop calling hooks and clean up their connections. **The goroutine that drives the watch loop lives inside the backend implementation** — confstruct does not manage it.
 
-Backends have no knowledge of the target struct type. The entry type handles coercion of the returned `any` value into the correct Go type, allowing numeric conversions (e.g., `int64` from a backend filling an `Int32Entry`). Coercion failures on hook calls are silently ignored — the entry retains its previous value.
+Backends have no knowledge of the target struct type. The entry type handles coercion of the returned `any` value into the correct Go type, allowing numeric conversions (e.g., `int64` from a backend filling an `Int32Entry`). Coercion failures on hook calls are silently ignored — the entry retains its previous value. This is deliberately different from `Populate`'s own initial walk; see [Error handling](#error-handling).
 
 For ordinary configuration reads, backends are not exposed to the caller. Once registered via `AddLayer`, they are internal details and the caller reads config through the struct. `Override` is the deliberate write-side exception: user code keeps its handle only to push or remove overrides.
 
