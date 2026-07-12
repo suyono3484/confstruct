@@ -15,13 +15,13 @@ revisited.
 
 | Step | Status | Notes |
 | --- | --- | --- |
-| [0.1 `layerManager` interface change](#01-layermanager-interface-change-confstructgo114-120) | Not started | |
-| [0.2 `entry[T].setSlot`](#02-entrytsetslot-confstructgo195-210) | Not started | |
-| [0.3 `walkAndInject`](#03-walkandinject-confstructgo538-597) | Not started | |
-| [0.4 `Populate`](#04-populate-confstructgo425-465) | Not started | |
-| [0.5 Strip doubled prefix](#05-strip-the-doubled-confstruct--prefix) | Not started | |
-| [0.6 Tests](#06-tests) | Not started | |
-| [0.7 Exit criteria](#07-exit-criteria) | Not started | |
+| [0.1 `layerManager` interface change](#01-layermanager-interface-change-confstructgo114-120) | Done | |
+| [0.2 `entry[T].setSlot`](#02-entrytsetslot-confstructgo195-210) | Done | |
+| [0.3 `walkAndInject`](#03-walkandinject-confstructgo538-597) | Done | |
+| [0.4 `Populate`](#04-populate-confstructgo425-465) | Done | |
+| [0.5 Strip doubled prefix](#05-strip-the-doubled-confstruct--prefix) | Done | grep found no stale `"confstruct: "`-prefixed assertions before the rewrite |
+| [0.6 Tests](#06-tests) | Done | Also fixed `toggleErrBackend`/renamed `TestPopulate_typeMismatchSilent` since the new error checking exposed unrelated conversion errors in the old fixture |
+| [0.7 Exit criteria](#07-exit-criteria) | Done | `go test github.com/suyono3484/confstruct` green |
 
 Status values: `Not started`, `In progress`, `Done`.
 

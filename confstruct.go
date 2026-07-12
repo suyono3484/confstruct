@@ -76,6 +76,7 @@ package confstruct
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -114,7 +115,7 @@ type ResolveHook func(key string, value any, backendName, backendDesc string)
 type layerManager interface {
 	initSlots(n int)
 	initSlotMeta(index int, name, desc string)
-	setSlot(index int, v any, ok bool)
+	setSlot(index int, v any, ok bool) error
 	resolvedState() (value any, backendName, backendDesc string, isSet bool)
 	hasChangedSinceNotify() (value any, name, desc string, isSet bool, changed bool)
 }
@@ -192,13 +193,13 @@ func (e *entry[T]) initSlotMeta(index int, name, desc string) {
 	e.slots[index].backendDesc = desc
 }
 
-func (e *entry[T]) setSlot(index int, v any, ok bool) {
+func (e *entry[T]) setSlot(index int, v any, ok bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if ok {
 		coerced, err := coerce[T](v)
 		if err != nil {
-			return
+			return err
 		}
 		e.slots[index].value = coerced
 		e.slots[index].ok = true
@@ -207,6 +208,7 @@ func (e *entry[T]) setSlot(index int, v any, ok bool) {
 		e.slots[index].ok = false
 	}
 	e.resolveUnderLock()
+	return nil
 }
 
 func (e *entry[T]) resolveUnderLock() {
@@ -348,14 +350,14 @@ func coerce[T any](v any) (T, error) {
 		// strconv, with a single implementation shared by both call sites.
 		result, err := parseString[T](formatNumericValue(rv), target)
 		if err != nil {
-			return zero, fmt.Errorf("confstruct: value %v overflows %s", v, target)
+			return zero, fmt.Errorf("value %v overflows %s", v, target)
 		}
 		return result, nil
 	}
 	if rv.Kind() == reflect.String {
 		return parseString[T](rv.String(), target)
 	}
-	return zero, fmt.Errorf("confstruct: cannot convert %T to %s", v, target)
+	return zero, fmt.Errorf("cannot convert %T to %s", v, target)
 }
 
 // formatNumericValue formats a numeric reflect.Value to its canonical decimal
@@ -379,29 +381,29 @@ func parseString[T any](s string, target reflect.Type) (T, error) {
 	case reflect.Bool:
 		b, err := strconv.ParseBool(s)
 		if err != nil {
-			return zero, fmt.Errorf("confstruct: cannot parse %q as bool", s)
+			return zero, fmt.Errorf("cannot parse %q as bool", s)
 		}
 		return any(b).(T), nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		n, err := strconv.ParseInt(s, 10, target.Bits())
 		if err != nil {
-			return zero, fmt.Errorf("confstruct: cannot parse %q as %s", s, target)
+			return zero, fmt.Errorf("cannot parse %q as %s", s, target)
 		}
 		return reflect.ValueOf(n).Convert(target).Interface().(T), nil
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		n, err := strconv.ParseUint(s, 10, target.Bits())
 		if err != nil {
-			return zero, fmt.Errorf("confstruct: cannot parse %q as %s", s, target)
+			return zero, fmt.Errorf("cannot parse %q as %s", s, target)
 		}
 		return reflect.ValueOf(n).Convert(target).Interface().(T), nil
 	case reflect.Float32, reflect.Float64:
 		n, err := strconv.ParseFloat(s, target.Bits())
 		if err != nil {
-			return zero, fmt.Errorf("confstruct: cannot parse %q as %s", s, target)
+			return zero, fmt.Errorf("cannot parse %q as %s", s, target)
 		}
 		return reflect.ValueOf(n).Convert(target).Interface().(T), nil
 	}
-	return zero, fmt.Errorf("confstruct: cannot convert string to %s", target)
+	return zero, fmt.Errorf("cannot convert string to %s", target)
 }
 
 func isNumericKind(k reflect.Kind) bool {
@@ -453,11 +455,18 @@ func Populate(ctx context.Context, cfgStruct any) error {
 	watchCtx, cancelWatches := context.WithCancel(ctx)
 	meta.watchCancel = cancelWatches
 
-	if err := walkAndInject(watchCtx, sv, meta, "", nil); err != nil {
+	var errs []error
+	if err := walkAndInject(watchCtx, sv, meta, "", nil, &errs); err != nil {
 		cancelWatches()
 		meta.watchCancel = nil
 		meta.state.Store(stateIdle)
 		return err
+	}
+	if len(errs) > 0 {
+		cancelWatches()
+		meta.watchCancel = nil
+		meta.state.Store(stateIdle)
+		return errors.Join(errs...)
 	}
 
 	meta.state.Store(stateDone)
@@ -535,7 +544,7 @@ func collectUnset(sv reflect.Value, prefix string, unset *[]string) error {
 	return nil
 }
 
-func walkAndInject(ctx context.Context, sv reflect.Value, meta *Meta, prefix string, chain []reflect.StructField) error {
+func walkAndInject(ctx context.Context, sv reflect.Value, meta *Meta, prefix string, chain []reflect.StructField, errs *[]error) error {
 	st := sv.Type()
 	for i := 0; i < st.NumField(); i++ {
 		f := st.Field(i)
@@ -575,10 +584,12 @@ func walkAndInject(ctx context.Context, sv reflect.Value, meta *Meta, prefix str
 				if err != nil {
 					return fmt.Errorf("confstruct: backend %q lookup %q: %w", b.Name(), key, err)
 				}
-				lm.setSlot(idx, v, ok)
+				if err := lm.setSlot(idx, v, ok); err != nil {
+					*errs = append(*errs, fmt.Errorf("confstruct: backend %q field %q: %w", b.Name(), key, err))
+				}
 				if wb, watchable := b.(WatchableBackend); watchable {
 					wb.Watch(ctx, key, func(v any, ok bool) {
-						lm.setSlot(idx, v, ok)
+						_ = lm.setSlot(idx, v, ok)
 						notify()
 					})
 				}
@@ -588,7 +599,7 @@ func walkAndInject(ctx context.Context, sv reflect.Value, meta *Meta, prefix str
 		}
 
 		if f.Type.Kind() == reflect.Struct {
-			if err := walkAndInject(ctx, fv, meta, key, fieldChain); err != nil {
+			if err := walkAndInject(ctx, fv, meta, key, fieldChain, errs); err != nil {
 				return err
 			}
 		}

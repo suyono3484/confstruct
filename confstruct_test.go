@@ -17,7 +17,6 @@ package confstruct
 import (
 	"context"
 	"errors"
-	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -151,27 +150,13 @@ func TestPopulate_numericOverflowRejected(t *testing.T) {
 		"Neg":    int64(-1),
 		"Narrow": int64(5_000_000_000),
 	}))
-	if err := Populate(context.Background(), &cfg); err != nil {
-		t.Fatal(err)
+	err := Populate(context.Background(), &cfg)
+	if err == nil {
+		t.Fatal("expected Populate error for overflowing numeric fields, got nil")
 	}
-
-	checks := []struct {
-		name string
-		set  bool
-		got  any
-	}{
-		{"Small", cfg.Small.IsSet(), cfg.Small.Value()},
-		{"USmall", cfg.USmall.IsSet(), cfg.USmall.Value()},
-		{"Neg", cfg.Neg.IsSet(), cfg.Neg.Value()},
-		{"Narrow", cfg.Narrow.IsSet(), cfg.Narrow.Value()},
-	}
-	for _, c := range checks {
-		if c.set {
-			t.Errorf("%s: IsSet=true after overflow, want false", c.name)
-		}
-		zero := reflect.Zero(reflect.TypeOf(c.got)).Interface()
-		if c.got != zero {
-			t.Errorf("%s: Value()=%v, want zero value %v", c.name, c.got, zero)
+	for _, field := range []string{"Small", "USmall", "Neg", "Narrow"} {
+		if !strings.Contains(err.Error(), field) {
+			t.Errorf("Populate error %q: missing mention of field %q", err.Error(), field)
 		}
 	}
 }
@@ -185,14 +170,12 @@ func TestPopulate_float32OverflowRejected(t *testing.T) {
 	cfg.AddLayer(Map(map[string]any{
 		"Big": float64(1e40),
 	}))
-	if err := Populate(context.Background(), &cfg); err != nil {
-		t.Fatal(err)
+	err := Populate(context.Background(), &cfg)
+	if err == nil {
+		t.Fatal("expected Populate error for float32 overflow, got nil")
 	}
-	if cfg.Big.IsSet() {
-		t.Errorf("Big: IsSet=true after float32 overflow, want false (got %v)", cfg.Big.Value())
-	}
-	if cfg.Big.Value() != 0 {
-		t.Errorf("Big: Value()=%v, want 0", cfg.Big.Value())
+	if !strings.Contains(err.Error(), "Big") {
+		t.Errorf("Populate error %q: missing mention of field %q", err.Error(), "Big")
 	}
 }
 
@@ -312,16 +295,99 @@ func TestUnsetFields_UnexportedEntryFieldFails(t *testing.T) {
 	}
 }
 
-func TestPopulate_typeMismatchSilent(t *testing.T) {
+func TestPopulate_typeMismatchRejected(t *testing.T) {
 	var cfg testConfig
 	cfg.AddLayer(Map(map[string]any{
 		"Name": 123, // int into StringEntry — mismatch
 	}))
-	if err := Populate(context.Background(), &cfg); err != nil {
-		t.Fatal(err)
+	err := Populate(context.Background(), &cfg)
+	if err == nil {
+		t.Fatal("expected Populate error for type mismatch, got nil")
+	}
+	if !strings.Contains(err.Error(), "Name") {
+		t.Errorf("Populate error %q: missing mention of field %q", err.Error(), "Name")
 	}
 	if cfg.Name.IsSet() {
 		t.Error("Name: IsSet=true after type mismatch, want false")
+	}
+}
+
+func TestPopulate_multipleConversionErrorsAggregated(t *testing.T) {
+	var cfg testConfig
+	cfg.AddLayer(Map(map[string]any{
+		"Name": 123,          // int into StringEntry — mismatch
+		"Port": "not-a-port", // unparseable string into IntEntry
+	}))
+	err := Populate(context.Background(), &cfg)
+	if err == nil {
+		t.Fatal("expected Populate error for multiple broken fields, got nil")
+	}
+	for _, field := range []string{"Name", "Port"} {
+		if !strings.Contains(err.Error(), field) {
+			t.Errorf("Populate error %q: missing mention of field %q", err.Error(), field)
+		}
+	}
+	var joined interface{ Unwrap() []error }
+	if !errors.As(err, &joined) {
+		t.Fatal("expected Populate error to unwrap as a joined error (errors.Join)")
+	}
+	if got := len(joined.Unwrap()); got != 2 {
+		t.Errorf("Populate error: got %d joined errors, want 2", got)
+	}
+}
+
+func TestPopulate_lowerLayerConversionErrorReportedEvenWhenOverridden(t *testing.T) {
+	var cfg testConfig
+	cfg.AddLayer(Map(map[string]any{"Port": "bogus"})) // lower-precedence: unparseable
+	cfg.AddLayer(Map(map[string]any{"Port": 9090}))    // higher-precedence: valid, would win resolution
+	err := Populate(context.Background(), &cfg)
+	if err == nil {
+		t.Fatal("expected Populate error from the lower-precedence layer's bad value, got nil")
+	}
+	if !strings.Contains(err.Error(), "Port") {
+		t.Errorf("Populate error %q: missing mention of field %q", err.Error(), "Port")
+	}
+}
+
+func TestPopulate_retryAfterConversionFailure(t *testing.T) {
+	var cfg testConfig
+	backend := &mutableValueBackend{field: "Port", value: "not-a-port"}
+	cfg.AddLayer(backend)
+
+	if err := Populate(context.Background(), &cfg); err == nil {
+		t.Fatal("expected first Populate call to fail due to conversion error")
+	}
+
+	backend.value = 9090
+
+	if err := Populate(context.Background(), &cfg); err != nil {
+		t.Fatalf("expected retry on the same struct to succeed once the backend value is fixed, got %v", err)
+	}
+	if cfg.Port.Value() != 9090 {
+		t.Errorf("Port: got %v, want 9090", cfg.Port.Value())
+	}
+}
+
+func TestPopulate_watchableBadPushAfterSuccessIgnored(t *testing.T) {
+	var cfg testConfig
+	w := &fakeWatchable{values: map[string]any{"Name": "remote"}}
+	cfg.AddLayer(Map(map[string]any{"Name": "default"}))
+	cfg.AddLayer(w)
+	if err := Populate(context.Background(), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Name.Value() != "remote" {
+		t.Fatalf("Name: got %q, want %q", cfg.Name.Value(), "remote")
+	}
+
+	// push a badly-typed value (int into StringEntry) after Populate succeeded
+	w.trigger("Name", 123, true)
+
+	if !cfg.Name.IsSet() {
+		t.Error("Name: IsSet=false after bad push, want true (unchanged)")
+	}
+	if cfg.Name.Value() != "remote" {
+		t.Errorf("Name after bad push: got %v, want unchanged %q", cfg.Name.Value(), "remote")
 	}
 }
 
@@ -502,7 +568,10 @@ type toggleErrBackend struct {
 }
 
 func (b *toggleErrBackend) Lookup(path string) (any, bool, error) {
-	if path == b.field && *b.err != nil {
+	if path != b.field {
+		return nil, false, nil
+	}
+	if *b.err != nil {
 		return nil, false, *b.err
 	}
 	return "value", true, nil
@@ -510,6 +579,24 @@ func (b *toggleErrBackend) Lookup(path string) (any, bool, error) {
 
 func (b *toggleErrBackend) Name() string     { return "toggle" }
 func (b *toggleErrBackend) Describe() string { return "" }
+
+// mutableValueBackend reports a single, mutable value for one field, letting
+// a test simulate a bad value being fixed in place and Populate retried
+// against the same backend instance.
+type mutableValueBackend struct {
+	field string
+	value any
+}
+
+func (b *mutableValueBackend) Lookup(path string) (any, bool, error) {
+	if path != b.field {
+		return nil, false, nil
+	}
+	return b.value, true, nil
+}
+
+func (b *mutableValueBackend) Name() string     { return "mutable" }
+func (b *mutableValueBackend) Describe() string { return "" }
 
 func (f *fakeWatchable) Lookup(path string) (any, bool, error) {
 	v, ok := f.values[path]
