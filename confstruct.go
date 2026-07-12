@@ -133,12 +133,9 @@ type fieldAwareBackend interface {
 // A struct starts stateIdle, moves to stateRunning while a Populate call owns
 // it, and only reaches the terminal stateDone once that call fully succeeds.
 // A failed call releases the claim back to stateIdle instead of permanently
-// locking the struct — only a successful call does that. This is not an
-// automatic-retry mechanism: most callers should treat a Populate error as
-// fatal. The allowance exists for callers that construct config
-// incrementally (a test isolating one backend, a tool letting a user correct
-// a bad source in place) and want to call Populate again on the same struct
-// instance once the cause is fixed.
+// locking the struct — only a successful call does that. See Populate's doc
+// comment for why a failed call is retryable and what that retry allowance
+// does and doesn't promise callers.
 const (
 	stateIdle uint32 = iota
 	stateRunning
@@ -484,11 +481,21 @@ func Populate(ctx context.Context, cfgStruct any) error {
 		return errors.Join(append(errs, err)...)
 	}
 
+	// Mark stateDone before flushing the initial notifies, not after: a
+	// concurrent watch push that arrived during the walk above (and so
+	// skipped its own notify(), per the stateDone check in the Watch
+	// closure) must be able to fire on its own the instant Populate is
+	// known to have succeeded, even if that happens to land in the middle
+	// of this flush loop. hasChangedSinceNotify compares resolved state
+	// rather than counting events, so a field notified both here and by a
+	// concurrent push is harmless — the second call just reports
+	// changed=false.
+	meta.state.Store(stateDone)
+
 	for _, notify := range pending {
 		notify()
 	}
 
-	meta.state.Store(stateDone)
 	return nil
 }
 
@@ -563,6 +570,13 @@ func collectUnset(sv reflect.Value, prefix string, unset *[]string) error {
 	return nil
 }
 
+// backendErr wraps a backend-scoped failure in the "confstruct: backend %q
+// <action> %q: <cause>" form shared by both the hard Lookup-error and soft
+// coercion-error call sites in walkAndInject.
+func backendErr(action string, b Backend, key string, err error) error {
+	return fmt.Errorf("confstruct: backend %q %s %q: %w", b.Name(), action, key, err)
+}
+
 func walkAndInject(ctx context.Context, sv reflect.Value, meta *Meta, prefix string, chain []reflect.StructField, errs *[]error, pending *[]func()) error {
 	st := sv.Type()
 	for i := 0; i < st.NumField(); i++ {
@@ -601,10 +615,10 @@ func walkAndInject(ctx context.Context, sv reflect.Value, meta *Meta, prefix str
 				lm.initSlotMeta(idx, b.Name(), b.Describe())
 				v, ok, err := lookupBackendValue(b, key, fieldChain)
 				if err != nil {
-					return fmt.Errorf("confstruct: backend %q lookup %q: %w", b.Name(), key, err)
+					return backendErr("lookup", b, key, err)
 				}
 				if err := lm.setSlot(idx, v, ok); err != nil {
-					*errs = append(*errs, fmt.Errorf("confstruct: backend %q field %q: %w", b.Name(), key, err))
+					*errs = append(*errs, backendErr("field", b, key, err))
 				}
 				if len(*errs) == 0 {
 					if wb, watchable := b.(WatchableBackend); watchable {
@@ -614,7 +628,18 @@ func walkAndInject(ctx context.Context, sv reflect.Value, meta *Meta, prefix str
 							// report through. Entry keeps its last good value. See
 							// docs/populate-error-handling.md#scope-initial-population-only.
 							_ = lm.setSlot(idx, v, ok)
-							notify()
+							// A push can arrive while this Populate call is still walking
+							// later fields (e.g. a concurrent Override.Set from another
+							// goroutine), before success/failure is known. Only notify once
+							// Populate has actually reached stateDone: notifying here on a
+							// call that goes on to fail would fire OnResolve for a struct
+							// Populate reports as not populated. If Populate does succeed,
+							// this field's entry in the pending-notify flush below picks up
+							// the pushed value (hasChangedSinceNotify compares state, not
+							// events, so nothing is lost by skipping this one).
+							if meta.state.Load() == stateDone {
+								notify()
+							}
 						})
 					}
 				}

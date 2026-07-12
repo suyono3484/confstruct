@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -159,11 +160,29 @@ func TestPopulate_numericOverflowRejected(t *testing.T) {
 			t.Errorf("Populate error %q: missing mention of field %q", err.Error(), field)
 		}
 	}
-	if cfg.Small.IsSet() || cfg.USmall.IsSet() || cfg.Neg.IsSet() || cfg.Narrow.IsSet() {
-		t.Error("expected all overflowing fields to remain IsSet=false")
+	if cfg.Small.IsSet() {
+		t.Error("Small: IsSet=true after overflow, want false")
 	}
-	if cfg.Small.Value() != 0 || cfg.USmall.Value() != 0 || cfg.Neg.Value() != 0 || cfg.Narrow.Value() != 0 {
-		t.Error("expected all overflowing fields to keep their zero value")
+	if cfg.Small.Value() != 0 {
+		t.Errorf("Small: got %v, want zero value", cfg.Small.Value())
+	}
+	if cfg.USmall.IsSet() {
+		t.Error("USmall: IsSet=true after overflow, want false")
+	}
+	if cfg.USmall.Value() != 0 {
+		t.Errorf("USmall: got %v, want zero value", cfg.USmall.Value())
+	}
+	if cfg.Neg.IsSet() {
+		t.Error("Neg: IsSet=true after overflow, want false")
+	}
+	if cfg.Neg.Value() != 0 {
+		t.Errorf("Neg: got %v, want zero value", cfg.Neg.Value())
+	}
+	if cfg.Narrow.IsSet() {
+		t.Error("Narrow: IsSet=true after overflow, want false")
+	}
+	if cfg.Narrow.Value() != 0 {
+		t.Errorf("Narrow: got %v, want zero value", cfg.Narrow.Value())
 	}
 }
 
@@ -751,5 +770,68 @@ func TestOnResolve_NotFiredWhenPopulateFails(t *testing.T) {
 	}
 	if cfg.Port.IsSet() {
 		t.Fatal("Port after failed Populate: IsSet=true, want false (coercion failed)")
+	}
+}
+
+// blockingBackend blocks in Lookup until release is closed, simulating a
+// slow later-field backend so a concurrent push on an earlier field's
+// WatchableBackend can land while Populate is still walking, before
+// success/failure is known.
+type blockingBackend struct {
+	field   string
+	release chan struct{}
+}
+
+func (b *blockingBackend) Lookup(path string) (any, bool, error) {
+	if path != b.field {
+		return nil, false, nil
+	}
+	<-b.release
+	return "not-a-port", true, nil
+}
+
+func (b *blockingBackend) Name() string     { return "blocking" }
+func (b *blockingBackend) Describe() string { return "" }
+
+// TestOnResolve_NotFiredOnConcurrentPushDuringFailedPopulate is the
+// regression repro for docs/pflag-plan-phase-0-code-review-2.md finding 1: a
+// WatchableBackend push landing while Populate is still walking later fields
+// must not fire OnResolve ahead of Populate's own success/failure
+// determination. Name's Override layer is already watched by the time the
+// walk reaches the blocking Port lookup; a concurrent Set on it must not
+// notify until Populate is known to have succeeded, and here it never does.
+func TestOnResolve_NotFiredOnConcurrentPushDuringFailedPopulate(t *testing.T) {
+	var cfg testConfig
+	var count atomic.Int64
+	cfg.OnResolve(func(key string, value any, backendName, backendDesc string) {
+		count.Add(1)
+	})
+
+	cfg.AddLayer(Map(map[string]any{"Name": "default", "Port": 0}))
+	ob := Override(map[string]any{"Name": "initial"})
+	cfg.AddLayer(ob)
+
+	release := make(chan struct{})
+	cfg.AddLayer(&blockingBackend{field: "Port", release: release})
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var populateErr error
+	go func() {
+		defer wg.Done()
+		populateErr = Populate(context.Background(), &cfg)
+	}()
+
+	// give Populate time to register Name's Override watch and block on Port's Lookup
+	time.Sleep(50 * time.Millisecond)
+	ob.Set("Name", "concurrent-update")
+	close(release)
+	wg.Wait()
+
+	if populateErr == nil {
+		t.Fatal("expected Populate to fail due to Port's bad value")
+	}
+	if got := count.Load(); got != 0 {
+		t.Fatalf("OnResolve fire count during/before a failed Populate call: got %d, want 0 (err=%v)", got, populateErr)
 	}
 }
