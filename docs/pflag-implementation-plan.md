@@ -25,14 +25,17 @@ tagged independently of whether the `pflag` backend ships immediately after.
 
 | Phase | Change | Touches existing backends? | Depends on |
 | --- | --- | --- | --- |
-| [0 — `Populate` error handling](pflag-plan-phase-0-error-handling.md) | `Populate` reports initial coercion failures | Yes — `Map`, `File`, `Env`, `Override` all flow through `setSlot` | none |
+| [0 — `Populate` error handling](populate-error-handling.md) | `Populate` reports initial coercion failures | Yes — `Map`, `File`, `Env`, `Override` all flow through `setSlot` | none |
 | [1 — name conversion](pflag-plan-phase-1-name-conversion.md) | Identifier → flag-name conversion helper + `cs.pflag` tag grammar | No (new file, no exported surface yet) | none |
 | [2 — duplicate-name validation](pflag-plan-phase-2-duplicate-detection.md) | Struct-wide duplicate-name validation mechanism in `Populate` | Adds one new optional interface; existing backends unaffected because none will implement it | Phase 1 |
 | [3 — `pflagBackend` core](pflag-plan-phase-3-backend.md) | `pflagBackend` itself (`Lookup`, `lookupField`, `Name`, `Describe`, constructor) | No | Phases 1–2 |
 | [4 — example and docs](pflag-plan-phase-4-example-docs.md) | Example app + doc updates | No | Phase 3 |
 
-Start at [Phase 0](pflag-plan-phase-0-error-handling.md) and follow the
-"Next" link at the bottom of each phase document in order.
+Phase 0 has shipped; its implementation notes are folded into
+[populate-error-handling.md](populate-error-handling.md), now a settled
+design-rationale document rather than a plan. Start at [Phase
+1](pflag-plan-phase-1-name-conversion.md) and follow the "Next" link at the
+bottom of each phase document in order.
 
 ## Tracker
 
@@ -42,7 +45,7 @@ applicable) are met, not when a PR merely opens.
 
 | Phase | Status | PR | Notes |
 | --- | --- | --- | --- |
-| [0 — `Populate` error handling](pflag-plan-phase-0-error-handling.md) | Not started | | |
+| [0 — `Populate` error handling](populate-error-handling.md) | Done | `add_pflag_phase0` branch, 3 review passes | Implementation plan doc retired; behavior and rationale now live in `populate-error-handling.md` and the README's [Error handling](../README.md#error-handling) section |
 | [1 — name conversion](pflag-plan-phase-1-name-conversion.md) | Not started | | |
 | [2 — duplicate-name validation](pflag-plan-phase-2-duplicate-detection.md) | Not started | | |
 | [3 — `pflagBackend` core](pflag-plan-phase-3-backend.md) | Not started | | |

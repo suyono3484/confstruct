@@ -88,7 +88,7 @@ func (b *pflagBackend) Lookup(path string) (any, bool, error) {
 func (b *pflagBackend) lookupField(path string, fields []reflect.StructField) (any, bool, error) {
 	name, err := pflagName(path, fields)
 	if err != nil {
-		return nil, false, fmt.Errorf("confstruct: backend %q lookup %q: %w", PFlagBackendName, path, err)
+		return nil, false, backendErr("lookup", b, path, err)
 	}
 	return b.lookupName(name)
 }
@@ -121,12 +121,12 @@ other backend (`Env.Lookup`, `File.Lookup`).
 
 No new work needed: `lookupName` returns `flag.Value.String()` and `ok ==
 true`, exactly like `Env`/`File`; the existing `coerce[T]` path (now
-error-returning per [Phase
-0](pflag-plan-phase-0-error-handling.md)) does the rest. Confirm during
-testing that:
+error-returning, see
+[populate-error-handling.md](populate-error-handling.md)) does the rest.
+Confirm during testing that:
 
-- `--db-port=abc` against `IntEntry` now surfaces a `Populate` error (Phase
-  0 dependency) instead of silently leaving the field unset.
+- `--db-port=abc` against `IntEntry` now surfaces a `Populate` error
+  instead of silently leaving the field unset.
 - `--verbose=false` and `--db-port=0` remain `Changed == true` and override
   a lower layer's `true`/non-zero value.
 

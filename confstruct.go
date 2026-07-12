@@ -136,6 +136,13 @@ type fieldAwareBackend interface {
 // locking the struct — only a successful call does that. See Populate's doc
 // comment for why a failed call is retryable and what that retry allowance
 // does and doesn't promise callers.
+//
+// state has a second reader beyond Populate itself: the WatchableBackend
+// push closure in walkAndInject checks state == stateDone before notifying,
+// so a live push that arrives while Populate is still walking later fields
+// doesn't fire OnResolve ahead of a call that goes on to fail. Any future
+// change to these transitions (a new state, a different Store ordering)
+// must keep that read correct too.
 const (
 	stateIdle uint32 = iota
 	stateRunning

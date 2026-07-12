@@ -11,7 +11,7 @@ Next: none — this is the last phase.
 | [4.1 Example app](#41-example-app) | Not started | |
 | [4.2 Optional cobra example](#42-optional-cobra-example) | Not started | |
 | [4.3 Update `pflag-integration.md` status](#43-update-pflag-integrationmd-status) | Not started | |
-| [4.4 Update `populate-error-handling.md` status](#44-update-populate-error-handlingmd-status) | Not started | |
+| [4.4 Update `populate-error-handling.md` status](#44-update-populate-error-handlingmd-status) | Done | Done early: `populate-error-handling.md` was rewritten into a settled design-rationale document (and its implementation-plan sibling, `pflag-plan-phase-0-error-handling.md`, retired) once Phase 0 shipped, rather than waiting for Phase 4 |
 
 Status values: `Not started`, `In progress`, `Done`.
 
@@ -44,8 +44,14 @@ dependency.
 
 ## 4.4 Update `populate-error-handling.md` status
 
-Update `populate-error-handling.md`'s Status line the same way once
-[Phase 0](pflag-plan-phase-0-error-handling.md) merges.
+Done early, ahead of this phase: once Phase 0 merged,
+[`populate-error-handling.md`](populate-error-handling.md) was rewritten
+from a "working draft" proposal into a settled design-rationale document
+(status: Implemented), with the corresponding user-facing contract added to
+the README's [Error handling](../README.md#error-handling) section. The
+implementation-plan sibling document, `pflag-plan-phase-0-error-handling.md`
+(a step-by-step checklist with no content not already better expressed in
+code, tests, and the rationale doc), was retired at the same time.
 
 This is the last phase. See [the plan
 index](pflag-implementation-plan.md#open-follow-ups) for follow-up work

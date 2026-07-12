@@ -123,7 +123,7 @@ func (b *pflagBackend) checkNames(entries []fieldPath) error {
 	for _, e := range entries {
 		name, err := pflagName(e.path, e.chain)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("confstruct: backend %q field %q: %w", PFlagBackendName, e.path, err))
+			errs = append(errs, backendErr("field", b, e.path, err))
 			continue
 		}
 		byName[name] = append(byName[name], e.path)

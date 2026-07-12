@@ -1,8 +1,9 @@
 # Phase 1 — Identifier-to-flag-name conversion + tag grammar
 
 Part of [the `pflag` implementation plan](pflag-implementation-plan.md).
-Previous: [Phase 0 — `Populate` conversion-error
-aggregation](pflag-plan-phase-0-error-handling.md). Next:
+Previous: Phase 0 — `Populate` conversion-error aggregation, shipped; see
+[populate-error-handling.md](populate-error-handling.md) for the settled
+design rationale. Next:
 [Phase 2 — struct-wide duplicate-name
 validation](pflag-plan-phase-2-duplicate-detection.md).
 

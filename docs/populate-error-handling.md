@@ -1,94 +1,69 @@
-# Working draft: `Populate` initial-conversion error handling
+# `Populate` error handling — design rationale
 
 ## Status
 
-Exploration only. This document proposes a change to `Populate`'s existing
-behavior; it does not commit the exact diff. Raised while designing the
-[`pflag` backend](pflag-integration.md), whose "Error handling" decision item
-explicitly deferred this question because it isn't scoped to one backend.
+Implemented (Phase 0 of the `pflag` integration effort — see
+[pflag-implementation-plan.md](pflag-implementation-plan.md)). This document
+records the reasoning behind the behavior described in the README's [Error
+handling](../README.md#error-handling) section. It is a design-rationale
+reference, not a plan for pending work — read the README section first for
+the user-facing contract; read this document for *why* it works that way.
 
-## Problem
+## Background
 
-When a backend supplies a value for a field but that value fails to coerce
-into the entry's declared type, `Populate` does not report it. In
-`entry[T].setSlot` (`confstruct.go:195-210`), a `coerce[T]` failure just
-`return`s — the slot is left at its zero state and `resolveUnderLock` never
-runs for that update:
+Before this behavior shipped, when a backend supplied a value for a field
+but that value failed to coerce into the entry's declared Go type,
+`Populate` did not report it: the failure was discarded, the field was left
+at its zero state, and `Populate` returned `nil`. That made a misconfigured
+value indistinguishable from an absent one — `IsSet()` was `false`,
+`Value()` was the zero value, and the entry silently fell through to
+whatever the next lower-precedence layer provided.
 
-```go
-func (e *entry[T]) setSlot(index int, v any, ok bool) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if ok {
-		coerced, err := coerce[T](v)
-		if err != nil {
-			return // <- silently discarded
-		}
-		e.slots[index].value = coerced
-		e.slots[index].ok = true
-	} else {
-		e.slots[index].value = *new(T)
-		e.slots[index].ok = false
-	}
-	e.resolveUnderLock()
-}
-```
-
-The result is indistinguishable from a field no backend ever addressed:
-`IsSet()` is `false`, `Value()` is the zero value, and the entry silently
-falls through to whatever the next lower-precedence layer provides. A
-misconfigured value and an absent one produce the same observable state.
-
-This was already flagged during review (see `docs/code-review-2026-07-11.md`,
-"Numeric coercion silently overflows"): fixing the overflow-detection bug in
-`coerce` made the failure detectable *inside* `coerce`, but `setSlot` still
-throws that detection away before it reaches `Populate`'s caller.
-
-This matters most for backends whose values are always strings needing
-parsing — `Env`, `File`, and the planned `PFlag` — where a single typo
+This mattered most for backends whose values are always strings needing
+parsing — `Env`, `File`, and the `pflag` backend — where a single typo
 (`--db-port=abc`, a malformed env var, a wrong-typed YAML value) is a
-plausible, everyday mistake. `Map`'s Go-typed values rarely trigger this
-path, since `coerce`'s fast path (`v.(T)`) matches them directly.
+plausible, everyday mistake. `Map`'s Go-typed values rarely triggered this
+path, since coercion's fast path matches them directly without parsing.
 
-## Recommended direction
-
-Make `Populate` return a non-nil error when any field's *initial* value
-fails to coerce during the synchronous walk it performs. Because coercion is
-centralized in `entry[T].setSlot`/`coerce[T]`, fixing it there covers `Map`,
-`File`, `Env`, `Override`, and the future `PFlag` simultaneously — no
-backend-specific code is needed. This is what makes "affects every backend"
-(the reason this was deferred) tractable rather than five separate patches.
+Coercion is centralized in one place (`entry[T].setSlot`, which calls
+`coerce[T]`), so fixing it there covers every backend — `Map`, `File`,
+`Env`, `Override`, and `pflag` — simultaneously, with no backend-specific
+code required.
 
 ## Scope: initial population only
 
-This decision covers only the synchronous walk performed inside a single
+This behavior covers only the synchronous walk performed inside a single
 `Populate` call. It deliberately does **not** change how a `WatchableBackend`
-push handled after `Populate` has already returned successfully — a
+push is handled after `Populate` has already returned successfully — a
 badly-typed pushed value continues to be ignored, leaving the entry at its
-last good resolved value, exactly as today. Failing a whole running
-application because one live external update happened to be malformed would
-trade a bounded, already-visible-at-startup problem for an unbounded,
-runtime one; that tradeoff isn't worth making as part of this change, and
-isn't what the "failed **initial** conversion" wording in the original
-decision item was asking about. See [Explicit
-non-goals](#explicit-non-goals).
+last good resolved value. Failing a whole running application because one
+live external update happened to be malformed would trade a bounded,
+already-visible-at-startup problem for an unbounded, runtime one; that
+tradeoff wasn't worth making as part of this change. See [Non-goals](#non-goals).
 
-## Design
+## Rationale
 
 ### Aggregate every failure, don't stop at the first
 
-Same reasoning as [duplicate flag name
-detection](pflag-integration.md#duplicate-flag-name-detection): a config
-with several broken fields should be reported in one `Populate` failure, not
-discovered one fix-and-rerun cycle at a time. `walkAndInject` should
-accumulate every conversion failure across the whole struct tree and every
-backend layer, then `Populate` returns them joined into a single error
-(`errors.Join`) once the walk finishes.
+A config with several broken fields is reported in one `Populate` failure,
+not discovered one fix-and-rerun cycle at a time. `walkAndInject`
+accumulates every conversion failure across the whole struct tree and every
+backend layer, and `Populate` returns them joined into a single error
+(`errors.Join`) once the walk finishes. This mirrors the same reasoning
+applied to duplicate flag-name detection in the `pflag` backend: report
+everything a pass can already see in one failure, not one concern at a
+time.
+
+`Backend.Lookup` errors are a separate, pre-existing case and are
+deliberately *not* folded into this aggregation: a `Lookup` error can
+indicate a broken backend connection, not just a bad value, and keeps
+returning immediately, exactly as before this change. Aggregation applies
+only to conversion (coercion) failures.
 
 ### Every failing layer is reported, not just the one that would have won
 
 A backend layer's `Lookup` can return `ok == true` for a field and still
-supply an unparseable value even if a higher-precedence layer would have
+supply an unparseable value, even if a higher-precedence layer would have
 overridden it anyway. That layer is reported regardless. `Populate` only
 ever calls a backend's `Lookup` for a path that corresponds to a real struct
 field — the backend is specifically claiming "I have a value for this exact
@@ -97,177 +72,92 @@ layer's configuration, independent of what ultimately wins the resolution.
 Not reporting it because a higher layer happens to be valid this run would
 leave a landmine for the day that higher layer's value is removed.
 
-### Interface and call-site changes
+### Partial results are kept on failure, not rolled back
 
-`layerManager.setSlot` gains an error return:
-
-```go
-type layerManager interface {
-	initSlots(n int)
-	initSlotMeta(index int, name, desc string)
-	setSlot(index int, v any, ok bool) error // was: setSlot(index int, v any, ok bool)
-	resolvedState() (value any, backendName, backendDesc string, isSet bool)
-	hasChangedSinceNotify() (value any, name, desc string, isSet bool, changed bool)
-}
-
-func (e *entry[T]) setSlot(index int, v any, ok bool) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if ok {
-		coerced, err := coerce[T](v)
-		if err != nil {
-			return err
-		}
-		e.slots[index].value = coerced
-		e.slots[index].ok = true
-	} else {
-		e.slots[index].value = *new(T)
-		e.slots[index].ok = false
-	}
-	e.resolveUnderLock()
-	return nil
-}
-```
-
-`walkAndInject`'s initial-population loop captures that error into an
-accumulator instead of discarding it; the `WatchableBackend` push closure
-explicitly discards it, preserving today's live-update behavior:
-
-```go
-for idx, b := range meta.backends {
-	lm.initSlotMeta(idx, b.Name(), b.Describe())
-	v, ok, err := lookupBackendValue(b, key, fieldChain)
-	if err != nil {
-		return fmt.Errorf("confstruct: backend %q lookup %q: %w", b.Name(), key, err)
-	}
-	if err := lm.setSlot(idx, v, ok); err != nil {
-		*errs = append(*errs, fmt.Errorf("confstruct: backend %q field %q: %w", b.Name(), key, err))
-	}
-	if wb, watchable := b.(WatchableBackend); watchable {
-		wb.Watch(ctx, key, func(v any, ok bool) {
-			_ = lm.setSlot(idx, v, ok) // live-update failures stay silent; see Scope
-			notify()
-		})
-	}
-}
-```
-
-`walkAndInject` needs an error accumulator threaded through its recursion
-into nested structs (a `*[]error` parameter, or each call returning its own
-slice for the caller to merge) so that a conversion failure three levels
-deep doesn't get lost or short-circuit the rest of the walk. `Lookup`
-errors are unaffected by this and keep returning immediately, exactly as
-today — that's a pre-existing, already-surfaced error path and out of scope
-here (see [Explicit non-goals](#explicit-non-goals)).
-
-At the top of `Populate`, after the walk completes:
-
-```go
-if len(errs) > 0 {
-	cancelWatches()
-	meta.watchCancel = nil
-	meta.state.Store(stateIdle)
-	return errors.Join(errs...)
-}
-```
-
-This reuses the exact cleanup `Populate` already performs on the existing
-error paths (`confstruct.go:456-461`), so the documented retry contract —
-"a call that returns an error does not consume that one-shot budget" — holds
-for conversion errors with no further changes: `initSlots` re-runs on retry
-and resets every slot, so a corrected backend value on the next `Populate`
-call starts clean.
-
-**Partial results on failure are kept, not rolled back.** Because
-conversion errors aggregate instead of stopping the walk, a failed
+Because conversion errors aggregate instead of stopping the walk, a failed
 `Populate` call can leave some fields resolved (`IsSet()==true`, `Value()`
 populated) while others remain unset — whichever fields' own coercion
 happened to succeed before the walk finished. This is intentional: the only
 contract callers get is "don't trust the struct until `err == nil`," not
-"an error means nothing was touched." A rollback-to-zero-state alternative
-(undo every field touched during a failed walk) was considered and rejected
-— see [`pflag-plan-phase-0-code-review.md` finding
-1](pflag-plan-phase-0-code-review.md#1-successful-fields-resolve-and-notify-before-a-failed-populate-call-returns)
-for the analysis. It would have discarded correctly-resolved data for no
-benefit to the dominant abort-on-error usage pattern, and actively hurt the
-retry-capable case (fix-one-backend-and-call-Populate-again) by forcing
-unnecessary re-resolution of fields that were already correct.
+"an error means nothing was touched."
 
-The same staleness can also happen within a single field: if a
-higher-precedence layer's value fails coercion, resolution never reaches
-that layer, so the field is left showing whichever lower-precedence layer's
-value last resolved successfully — indistinguishable from that
-higher-precedence layer never having set the field at all. See [finding
-5](pflag-plan-phase-0-code-review.md#5-no-test-for-earlier-layer-succeeds-later-layer-fails-ordering)
-for the mechanism and a pinned regression test
-(`TestPopulate_higherLayerConversionErrorLeavesLowerLayerValue`).
+A rollback-to-zero-state alternative was considered and rejected: tracking
+every field touched during a failed walk and resetting each one
+(`isSet=false`, resolved value zeroed, slots cleared) before `Populate`
+returns its error, for full atomicity. That would have discarded
+correctly-resolved data for no benefit to the dominant abort-on-error usage
+pattern (a caller that treats any `Populate` error as fatal never reads
+`cfg` again, so it doesn't matter whether partial state was rolled back).
+It would also have actively hurt the retry-capable case — a test that fixes
+one broken backend and calls `Populate` again would have its already-correct
+fields wiped and forced through unnecessary re-resolution, for no
+corresponding upside.
 
-### Avoid a doubled `"confstruct: "` prefix
+### Same-field staleness: a failed higher-precedence override
 
-`coerce` and `parseString` already prefix their own errors (`confstruct.go:351,
-358, 382, 388, 394, 400, 404`) — e.g. `"confstruct: value %v overflows %s"`.
-Wrapping one of those again with `"confstruct: backend %q field %q: %w"`
-would produce a doubled prefix (`confstruct: backend "pflag" field
-"Database.Port": confstruct: value abc overflows int8`). Strip the
-self-prefix from those five error sites so they read as plain fragments
-(`"value %v overflows %s"`, `"cannot parse %q as %s"`, `"cannot convert %T
-to %s"`), and let the new wrap in `walkAndInject` supply the single prefix —
-matching the existing `Lookup`-error convention exactly:
+The same kind of staleness can also happen within a single field, not just
+across fields. If a higher-precedence layer's value fails coercion,
+resolution never reaches that layer — the entry is left showing whichever
+lower-precedence layer's value last resolved successfully, which is
+indistinguishable from that higher-precedence layer never having addressed
+the field at all.
 
-```text
+Mechanically: a layer's slot is only marked resolved (`ok = true`) *after*
+its value successfully coerces. A coercion failure returns before that
+write happens, so the slot keeps its zero-value default, and resolution
+(which scans from the highest-precedence slot down and stops at the first
+`ok` one) simply skips it and lands on the next lower slot that succeeded.
+Nothing in the entry's readable state records "a higher-precedence layer
+attempted to set this field and failed" — from the caller's point of view,
+`Value()` returns a real, previously-valid value, not an obviously-wrong
+sentinel, which makes this staleness easy to mistake for the intended final
+value rather than a rejected override's fallback.
+
+This is a reasonable consequence of the "keep partial results" decision
+above, not a separate bug: the same "don't trust the struct until `err ==
+nil`" contract already covers it.
+
+## Retry semantics
+
+A failed `Populate` call does not permanently lock the struct — only a
+successful call does that. The same struct instance remains valid to pass
+to `Populate` again once the cause of the failure has been addressed, and a
+retry starts clean: slot storage is re-initialized on every `Populate` call,
+so a corrected backend value on the next attempt resolves normally with no
+leftover state from the failed attempt.
+
+This is not an automatic-retry mechanism, and most callers — a service
+loading its config once at startup — should treat a non-nil `Populate` error
+as fatal. The allowance exists for callers that construct config
+incrementally: a test that isolates one backend, or a tool that lets a user
+correct a bad source in place, without being forced to start over with a
+new struct instance.
+
+## Error message shape
+
+A conversion failure is wrapped as `confstruct: backend %q field %q: %w`,
+matching the existing `confstruct: backend %q lookup %q: %w` convention
+already used for `Lookup` errors — both share one small helper so the
+wording can't drift between the two call sites. The underlying coercion
+error itself (`"value %v overflows %s"`, `"cannot parse %q as %s"`, etc.)
+carries no `confstruct: ` prefix of its own, so wrapping it doesn't produce
+a doubled prefix; the outer wrap supplies the single `confstruct: ` prefix
+for the whole message, e.g.:
+
+```
 confstruct: backend "pflag" field "Database.Port": value abc overflows int8
 ```
 
-## Decisions to settle before implementation
-
-1. **Aggregate vs. fail-fast for conversion errors.** Recommended:
-   aggregate via `errors.Join`, matching the duplicate-name precedent. A
-   fail-fast alternative is simpler to implement but reintroduces the
-   fix-one-rerun-fix-next friction this project has already rejected once.
-2. **`Lookup` errors stay fail-fast.** This change only touches conversion
-   (coercion) failures. Folding `Lookup` errors into the same aggregation
-   model is a separate decision with its own tradeoffs (a `Lookup` error can
-   indicate a broken backend connection, not just a bad value) and isn't
-   part of what the original "failed initial conversion" item asked for.
-3. **`WatchableBackend` push-time failures stay silent.** Confirmed as an
-   explicit non-goal above — worth a second look only if a future backend's
-   live-push failure mode turns out to need visibility (an `OnResolve`-style
-   error hook, not a `Populate`-time change).
-4. **Prefix stripping in `coerce`/`parseString`.** Five error strings change
-   shape (prefix removed). Grep for any code asserting the literal
-   `"confstruct: "`-prefixed coercion message before implementing, since
-   these are the same call sites `docs/code-review-2026-07-11.md`'s overflow
-   fix already touched once.
-
-## Test matrix
-
-- `TestPopulate_numericOverflowRejected`, `TestPopulate_float32OverflowRejected`,
-  and `TestPopulate_typeMismatchSilent` currently assert `Populate` returns
-  `nil` and the field is silently unset; rewrite them to assert a non-nil
-  `Populate` error instead (and rename `TestPopulate_typeMismatchSilent`,
-  since it will no longer be silent).
-- A struct with two or more independently broken fields reports all of them
-  in one `Populate` error, not just the first encountered.
-- A lower-precedence layer's unparseable value errors even when a
-  higher-precedence layer supplies a valid value for the same field —
-  confirms failing layers are reported regardless of which layer would have
-  won.
-- A `WatchableBackend` pushing a badly-typed value after a successful
-  `Populate` does not error and leaves the field's already-resolved value
-  unchanged — regression guard for the live-update non-goal.
-- `Populate` remains retryable after a conversion-error failure: fix the
-  backend's value and call `Populate` again on the same struct; it succeeds
-  and every field resolves normally.
-
-## Explicit non-goals
+## Non-goals
 
 - Making `Backend.Lookup` errors participate in the same aggregation as
-  conversion errors.
+  conversion errors — see [Aggregate every failure](#aggregate-every-failure-dont-stop-at-the-first)
+  above for why they stay separate.
 - Changing `WatchableBackend` push-time coercion-failure handling — it stays
   silent, preserving a running application's stability against one bad live
-  update.
+  update. See [Scope: initial population only](#scope-initial-population-only).
 - A way to distinguish, after a *successful* `Populate`, "unset because no
-  backend addressed this field" from "unset because coercion failed" — moot
-  once a successful `Populate` can no longer have an unreported conversion
-  failure; the two cases only looked alike because the failure case used to
-  slip through silently.
+  backend addressed this field" from "unset because coercion failed." This
+  is moot once a successful `Populate` can no longer have an unreported
+  conversion failure — the two cases only ever looked alike because the
+  failure case used to slip through silently.
