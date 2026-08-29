@@ -147,9 +147,19 @@ func NewFieldLookupSeal(impl FieldLookuper) FieldLookupSeal {
 }
 
 func (s FieldLookupSeal) lookupField(path string, fields []reflect.StructField) (any, bool, error) {
+    if s.impl == nil {
+        panic("confstruct: FieldLookupSeal used without NewFieldLookupSeal")
+    }
     return s.impl.LookupFieldValue(path, fields)
 }
 ```
+
+The nil guard turns a misuse case — a backend embedding the seal but never
+calling `NewFieldLookupSeal` (e.g. an accidental bare struct literal
+instead of going through `PFlag`) — into a clear, actionable panic instead
+of a bare nil-interface dereference trace. `NameCollisionSeal.checkNames`
+carries the identical guard for the identical reason — see
+[pflag-plan-phase-2-duplicate-detection.md#21-new-optional-backend-interface](pflag-plan-phase-2-duplicate-detection.md#21-new-optional-backend-interface).
 
 `pflagBackend` embeds `confstruct.FieldLookupSeal` and implements
 `LookupFieldValue`. Because the seal needs a live reference back to
@@ -199,11 +209,14 @@ does today for `Env`/`File`'s `lookupField` — neither of which calls
 pattern and simply return a plain, unwrapped error. `checkNames`/
 `CheckFieldNames` has no equivalent wrap-at-call-site in the [proposed
 `Populate` wiring](pflag-plan-phase-2-duplicate-detection.md#23-wiring-in-populate-confstructgo425-465),
-so `pflagBackend` gets its own small local helper, `pflagBackendErr`,
-mirroring `backendErr`'s exact format — see
-[pflag-plan-phase-2-duplicate-detection.md#24-pflagbackendcheckfieldnames](pflag-plan-phase-2-duplicate-detection.md#24-pflagbackendcheckfieldnames)
+so `pflag` gets its own small local helper, `pflagBackendErr`, mirroring
+`backendErr`'s exact format — see
+[pflag-plan-phase-2-duplicate-detection.md#24-field-name-collision-detection-checkfieldnames](pflag-plan-phase-2-duplicate-detection.md#24-field-name-collision-detection-checkfieldnames)
 for its definition and the distinct `"name-check"` action word it uses
-there.
+there. This lives as a standalone function, not a `pflagBackend` method —
+see that same section for why `checkNames`/`CheckFieldNames`'s whole
+implementation ships as a free function, `checkFieldNames`, ahead of
+`pflagBackend` itself existing.
 
 ## Semantics
 
@@ -663,7 +676,7 @@ weaker way to say the same thing.
    Uses a plain Oxford-comma-and join of the colliding paths ("A" and "B";
    "A", "B", and "C") with no "both"/"all" qualifier — the plural "fields"
    already carries that, and a fixed ending avoids branching on count. See
-   [pflag-plan-phase-2-duplicate-detection.md#24-pflagbackendcheckfieldnames](pflag-plan-phase-2-duplicate-detection.md#24-pflagbackendcheckfieldnames)
+   [pflag-plan-phase-2-duplicate-detection.md#24-field-name-collision-detection-checkfieldnames](pflag-plan-phase-2-duplicate-detection.md#24-field-name-collision-detection-checkfieldnames)
    for the exact implementation.
 
    If a struct has more than one colliding group, report all of them in one

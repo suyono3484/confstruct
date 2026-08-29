@@ -27,9 +27,27 @@ interface. **Decided:** this is resolved with an exported
 [pflag-integration.md#cross-package-hook-mechanism-decided](pflag-integration.md#cross-package-hook-mechanism-decided)
 for the full mechanism and why a plain exported interface was rejected in
 favor of it. [2.1](#21-new-optional-backend-interface) and
-[2.4](#24-pflagbackendcheckfieldnames) below are updated to sketch against
-that mechanism; the traversal shape, scoping rules, and test matrix
-elsewhere in this phase are unaffected.
+[2.4](#24-field-name-collision-detection-checkfieldnames) below are updated
+to sketch against that mechanism; the traversal shape, scoping rules, and
+test matrix elsewhere in this phase are unaffected.
+
+**Decided — sequencing: 2.4 ships as a free function, not a `pflagBackend`
+method.** `pflagBackend` the type doesn't exist until [Phase
+3](pflag-plan-phase-3-backend.md), which the [top-level
+plan](pflag-implementation-plan.md) lists as *depending on* this phase —
+so a `CheckFieldNames` sketched as `func (b *pflagBackend) ...` can't
+actually compile or be tested until Phase 3 also lands, which would leave
+this phase permanently unable to reach "Done" on its own. Instead, [2.4](#24-field-name-collision-detection-checkfieldnames)
+implements the whole algorithm as a standalone function, `checkFieldNames(entries
+[]confstruct.FieldPath) error`, in a new file `pflag/pflag_collision.go`
+with its own `pflag/pflag_collision_test.go` — fully testable with no
+`pflagBackend`, `PFlag`, or `*pflag.FlagSet` involved at all. Phase 3 then
+adds `pflagBackend` and wires this in with a one-line delegate:
+`func (b *pflagBackend) CheckFieldNames(entries []confstruct.FieldPath)
+error { return checkFieldNames(entries) }`. This also means the
+`pflagBackendErr` helper (see [2.4](#24-field-name-collision-detection-checkfieldnames))
+takes no backend receiver — it doesn't need one, since `pflagBackend.Name()`
+always returns the fixed constant `PFlagBackendName`.
 
 ## Tracker
 
@@ -38,8 +56,8 @@ elsewhere in this phase are unaffected.
 | [2.1 New optional `Backend` interface](#21-new-optional-backend-interface) | Not started | |
 | [2.2 Collecting `[]FieldPath`](#22-collecting-fieldpath-before-the-value-walk) | Not started | |
 | [2.3 Wiring in `Populate`](#23-wiring-in-populate-confstructgo425-465) | Not started | |
-| [2.4 `pflagBackend.CheckFieldNames`](#24-pflagbackendcheckfieldnames) | Not started | |
-| [2.5 Tests](#25-tests--in-confstruct_testgo-or-a-new-pflag_testgo) | Not started | |
+| [2.4 Field-name-collision detection (`checkFieldNames`)](#24-field-name-collision-detection-checkfieldnames) | Not started | |
+| [2.5 Tests](#25-tests--in-confstruct_testgo-and-pflagpflag_collision_testgo) | Not started | |
 
 Status values: `Not started`, `In progress`, `Done`.
 
@@ -88,9 +106,20 @@ func NewNameCollisionSeal(impl NameCollisionChecker) NameCollisionSeal {
 }
 
 func (s NameCollisionSeal) checkNames(entries []FieldPath) error {
+	if s.impl == nil {
+		panic("confstruct: NameCollisionSeal used without NewNameCollisionSeal")
+	}
 	return s.impl.CheckFieldNames(entries)
 }
 ```
+
+`NameCollisionSeal`'s zero value has a nil `impl`; the guard turns a
+misuse case (a backend embedding the seal but never calling
+`NewNameCollisionSeal`, e.g. an accidental bare struct literal) into a
+clear, actionable panic instead of a bare nil-interface dereference trace.
+`FieldLookupSeal.lookupField` in
+[pflag-integration.md#cross-package-hook-mechanism-decided](pflag-integration.md#cross-package-hook-mechanism-decided)
+carries the identical guard for the identical reason.
 
 Only `pflagBackend` implements this initially. `Map`, `File`, `Env`,
 `Override` are unaffected — the type assertion in `Populate` simply won't
@@ -148,30 +177,35 @@ This runs after the "no backends" / "lowest layer watchable" checks but
 before `watchCtx`/`cancelWatches` are created, so a rejected call leaves no
 watch to cancel.
 
-## 2.4 `pflagBackend.CheckFieldNames`
+## 2.4 Field-name-collision detection (`checkFieldNames`)
 
-`pflagBackend` embeds `confstruct.NameCollisionSeal` (see
-[2.1](#21-new-optional-backend-interface) and
-[pflag-integration.md#cross-package-hook-mechanism-decided](pflag-integration.md#cross-package-hook-mechanism-decided))
-and implements `CheckFieldNames`, the method the seal forwards to. Note
-this runs in package `pflag`, so it has no access to `confstruct`'s
-unexported `backendErr` — a seal or embedding trick only solves
-*interface*-method satisfaction, not access to an unexported *function*.
-That turns out not to matter for `lookupField` (whose errors are wrapped
-once, uniformly, by `walkAndInject` itself — see
+**Decided:** this ships as a standalone function in a new file,
+`pflag/pflag_collision.go` — not a `pflagBackend` method — per the
+sequencing decision at the top of this document. `pflagBackend` doesn't
+exist until Phase 3, so nothing here can take a `*pflagBackend` receiver
+or reference `b.Name()`.
+
+This code has no access to `confstruct`'s unexported `backendErr` — a seal
+or embedding trick only solves *interface*-method satisfaction, not access
+to an unexported *function*, and there's no `pflagBackend` to embed a seal
+into yet regardless. That turns out not to matter for `lookupField` (whose
+errors are wrapped once, uniformly, by `walkAndInject` itself — see
 [pflag-integration.md#cross-package-hook-mechanism-decided](pflag-integration.md#cross-package-hook-mechanism-decided)),
 but `checkNames` has no equivalent wrap point in the [2.3
-wiring](#23-wiring-in-populate-confstructgo425-465) above, so `pflagBackend`
-gets its own tiny local helper mirroring `backendErr`'s exact format:
+wiring](#23-wiring-in-populate-confstructgo425-465) above, so this file
+gets its own tiny local helper mirroring `backendErr`'s exact format. It
+takes no backend receiver — `pflagBackend.Name()` will always return the
+fixed constant `PFlagBackendName`, so there's nothing to look up on an
+instance:
 
 ```go
-// pflagBackendErr mirrors confstruct's unexported backendErr, which
-// pflagBackend cannot call directly across the package boundary (embedding
-// a seal only solves interface-method satisfaction, not access to an
-// unexported function). Keeps every hand-built pflagBackend error in the
-// same "confstruct: backend %q <action> %q: <cause>" shape.
-func pflagBackendErr(action string, b *pflagBackend, key string, err error) error {
-	return fmt.Errorf("confstruct: backend %q %s %q: %w", b.Name(), action, key, err)
+// pflagBackendErr mirrors confstruct's unexported backendErr, which this
+// package cannot call directly across the package boundary (embedding a
+// seal only solves interface-method satisfaction, not access to an
+// unexported function). Keeps every hand-built pflag error in the same
+// "confstruct: backend %q <action> %q: <cause>" shape.
+func pflagBackendErr(action, key string, err error) error {
+	return fmt.Errorf("confstruct: backend %q %s %q: %w", PFlagBackendName, action, key, err)
 }
 ```
 
@@ -184,9 +218,9 @@ coercion) would make the same word mean two different things depending on
 context. `"lookup"` is what `walkAndInject` uses when this exact
 `pflagName` error is instead caught later, during a real `lookupField`
 call (`confstruct.go:625`) — a case this pre-pass makes unreachable for
-`pflag` in practice, since `CheckFieldNames` computes `pflagName` for every
-field before any lookup runs, but the two call sites still deserve their
-own distinct wording rather than colliding on one.
+`pflag` in practice, since `checkFieldNames` computes `pflagName` for
+every field before any lookup runs, but the two call sites still deserve
+their own distinct wording rather than colliding on one.
 
 Because this pre-pass already has to compute `pflagName` for every field to
 group collisions, have it also surface invalid-tag errors here rather than
@@ -197,13 +231,13 @@ matches the aggregation principle in
 failure, not one fix-rerun-fix cycle per concern.
 
 ```go
-func (b *pflagBackend) CheckFieldNames(entries []confstruct.FieldPath) error {
+func checkFieldNames(entries []confstruct.FieldPath) error {
 	byName := make(map[string][]string, len(entries)) // resolved name -> field paths
 	var errs []error
 	for _, e := range entries {
 		name, err := pflagName(e.Path, e.Chain)
 		if err != nil {
-			errs = append(errs, pflagBackendErr("name-check", b, e.Path, err))
+			errs = append(errs, pflagBackendErr("name-check", e.Path, err))
 			continue
 		}
 		byName[name] = append(byName[name], e.Path)
@@ -231,9 +265,9 @@ func (b *pflagBackend) CheckFieldNames(entries []confstruct.FieldPath) error {
 
 **Decided: `quotedJoin` renders a natural, Oxford-comma-and-joined,
 quoted list — no "both"/"all" qualifier in the surrounding message.**
-`["A", "B"]` → `"A" and "B"`; `["A", "B", "C"]` → `"A", "B", and "C"`. This
-lives in `pflag/pflag.go` alongside `CheckFieldNames`, not `confstruct.go`
-— it's pflag-specific formatting, not a shared hook:
+`["A", "B"]` → `"A" and "B"`; `["A", "B", "C"]` → `"A", "B", and "C"`. Also
+lives in `pflag/pflag_collision.go` alongside `checkFieldNames` — it's
+pflag-specific formatting, not a shared hook:
 
 ```go
 // quotedJoin renders paths (already sorted by the caller) as a natural,
@@ -269,11 +303,9 @@ The doc's earlier text used "both resolve to it" for exactly this
 two-field case; that wording is dropped in favor of always ending "resolve
 to it" so the message doesn't need to branch on count.
 
-`CheckFieldNames` and `quotedJoin` add `"sort"` and `"strings"` to
-whatever import block ends up in `pflag/pflag.go` — not shown in [Phase
-3.2](pflag-plan-phase-3-backend.md#32-new-file-pflagpflaggo)'s current
-import list, since that sketch predates this code landing in the same
-file.
+`pflag/pflag_collision.go` needs `"fmt"`, `"sort"`, `"strings"`, and
+`"github.com/suyono3484/confstruct"` — a standalone import block, separate
+from whatever `pflag/pflag.go` ends up needing in Phase 3.
 
 Map iteration order is nondeterministic; sort `paths` within each
 collision group (done above, right before formatting — struct-declaration
@@ -284,33 +316,62 @@ hit nondeterministic-output bugs once (see recent commit `91026bb`), so
 treat map-iteration order as a footgun by default here, not an oversight
 to catch later.
 
-## 2.5 Tests — in `confstruct_test.go` or a new `pflag/pflag_test.go`
+**Phase 3 wiring (forward reference):** once `pflagBackend` exists, it
+satisfies `NameCollisionChecker` with a one-line delegate:
 
-Now that `pflagBackend` lives in its own package (see the package-layout
-note above), split by what's actually being tested: the generic pre-pass
-wiring in `Populate` (2.2/2.3) belongs in `confstruct_test.go` alongside its
-existing tests, while `pflagBackend`'s own name-collision logic (2.4)
-belongs in `pflag/pflag_test.go`.
+```go
+func (b *pflagBackend) CheckFieldNames(entries []confstruct.FieldPath) error {
+	return checkFieldNames(entries)
+}
+```
 
-Directly from [the examples
-table](pflag-integration.md#examples) and [the rules
-section](pflag-integration.md#rules):
+No receiver logic needed — the whole algorithm already lives here,
+independent of the backend instance.
 
-- Two fields with different derived names in the same `Populate` call: no
-  error.
+## 2.5 Tests — in `confstruct_test.go` and `pflag/pflag_collision_test.go`
+
+Split three ways, following the sequencing decision above:
+
+**`confstruct_test.go`** (`package confstruct` — cannot import `pflag`,
+that would be an import cycle) tests the generic pre-pass wiring (2.2/2.3)
+against a small test-only stub type defined in that file, directly
+implementing the private `nameCollisionBackend` interface (its own
+`checkNames` method) — no seal needed, since the stub already lives inside
+package `confstruct`.
+
+**`pflag/pflag_collision_test.go`** tests `checkFieldNames` (2.4) directly,
+with hand-built `[]confstruct.FieldPath` — no `pflagBackend`, `PFlag`, or
+`*pflag.FlagSet` involved, since none of those exist until Phase 3. Most of
+[the examples table](pflag-integration.md#examples) and [the rules
+section](pflag-integration.md#rules) reduce to this shape:
+
+- Two fields with different derived names: no error.
 - One untagged field and one `cs.pflag`-tagged field resolving to the same
-  name, same call: error naming both paths.
-- The same tag-derived name in two *separate* `Meta`-rooted structs,
-  populated by two separate `Populate` calls: no error (this is the
-  subcommand scenario — write it as two structs, two `Populate` calls, both
-  succeed).
+  name: error naming both paths.
+- The same tag-derived name across two *separate* `checkFieldNames` calls,
+  each with its own `[]FieldPath`: no error in either call — this is the
+  unit-level proof of the subcommand scenario; [Phase
+  3.4](pflag-plan-phase-3-backend.md#34-tests--pflagpflag_testgo) also
+  covers it end-to-end once `Populate` and `PFlag` are wired together.
 - Two colliding fields plus a third, unrelated collision elsewhere in the
-  same struct: both collisions reported in one error.
-- The check fires even when the `*pflag.FlagSet` passed to `PFlag` doesn't
-  define either colliding flag at all, and regardless of `Changed` — construct
-  a `pflag.FlagSet` with neither flag registered and confirm `Populate` still
-  fails structurally.
-- An invalid `cs.pflag` tag on one field plus a genuine duplicate elsewhere:
-  both surface in the same `errors.Join`.
+  same input: both collisions reported in one error.
+- An invalid `cs.pflag` tag on one field plus a genuine duplicate
+  elsewhere: both surface in the same `errors.Join`.
+- **Decided (recommendation 6):** pin the exact duplicate-name error
+  string with a dedicated test, `TestCheckFieldNames_duplicateErrorText`
+  or similar, the same way Phase 1 has
+  `TestPFlagName_invalidTagErrorText`. This is the mechanism that would
+  catch a future drift between this error's actual text and the example in
+  [pflag-integration.md#duplicate-flag-name-detection](pflag-integration.md#duplicate-flag-name-detection)
+  before it becomes a doc/code inconsistency again — cover both the
+  two-path case (`"A" and "B"`) and a three-or-more-path case
+  (`"A", "B", and "C"`) so `quotedJoin`'s branch on count is exercised
+  too.
+
+**Deferred to [Phase 3.4](pflag-plan-phase-3-backend.md#34-tests--pflagpflag_testgo):**
+the one case that genuinely needs a real `pflagBackend` and
+`*pflag.FlagSet` — the check firing even when the `FlagSet` passed to
+`PFlag` doesn't define either colliding flag at all, and regardless of
+`Changed` — since Phase 2 has nothing to construct that check against yet.
 
 Continue to [Phase 3 — `pflagBackend` core](pflag-plan-phase-3-backend.md).

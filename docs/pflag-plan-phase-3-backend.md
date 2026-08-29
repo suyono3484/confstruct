@@ -131,10 +131,15 @@ func (b *pflagBackend) lookupName(name string) (any, bool, error) {
 	return flag.Value.String(), true, nil
 }
 
-// CheckFieldNames satisfies confstruct.NameCollisionChecker; see Phase 2.4:
-// docs/pflag-plan-phase-2-duplicate-detection.md#24-pflagbackendcheckfieldnames
+// CheckFieldNames satisfies confstruct.NameCollisionChecker; NameCollisionSeal
+// forwards nameCollisionBackend.checkNames calls here. checkFieldNames is the
+// standalone function Phase 2 already implemented and tested in
+// pflag/pflag_collision.go -- see
+// docs/pflag-plan-phase-2-duplicate-detection.md#24-field-name-collision-detection-checkfieldnames.
+// This method has no logic of its own; it exists only because Phase 2 could
+// not take a *pflagBackend receiver before this type existed.
 func (b *pflagBackend) CheckFieldNames(entries []confstruct.FieldPath) error {
-	// see Phase 2.4
+	return checkFieldNames(entries)
 }
 ```
 
@@ -196,10 +201,13 @@ implementation](pflag-integration.md#test-matrix-for-an-implementation):
   though the doc recommends against that placement; it is never mistakenly
   rejected by the "lowest layer must not be watchable" check, since it does
   not implement `WatchableBackend`.
-- Duplicate-name and invalid-tag cases from [Phase
-  2.5](pflag-plan-phase-2-duplicate-detection.md#25-tests--in-confstruct_testgo-or-a-new-pflag_testgo)
-  (co-located here or there — pick one file and cross-reference, don't split
-  the same feature's tests across two files).
+- The one duplicate-name case [Phase
+  2.5](pflag-plan-phase-2-duplicate-detection.md#25-tests--in-confstruct_testgo-and-pflagpflag_collision_testgo)
+  explicitly deferred here: the check fires even when the `*pflag.FlagSet`
+  passed to `PFlag` doesn't define either colliding flag at all, and
+  regardless of `Changed`. Every other duplicate-name/invalid-tag case is
+  already covered as a pure `checkFieldNames` unit test in
+  `pflag/pflag_collision_test.go` and doesn't need repeating here.
 
 ## 3.5 Godoc
 
