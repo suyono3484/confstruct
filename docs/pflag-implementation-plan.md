@@ -76,7 +76,7 @@ applicable) are met, not when a PR merely opens.
 | Phase | Status | PR | Notes |
 | --- | --- | --- | --- |
 | [0 — `Populate` error handling](populate-error-handling.md) | Done | `add_pflag_phase0` branch, 3 review passes | Implementation plan doc retired; behavior and rationale now live in `populate-error-handling.md` and the README's [Error handling](../README.md#error-handling) section |
-| [1 — name conversion](pflag-plan-phase-1-name-conversion.md) | Not started | | |
+| [1 — name conversion](pflag-plan-phase-1-name-conversion.md) | Done | `add_pflag_phase1` branch | Code review found one issue (non-ASCII/underscore identifiers silently bypassing the ASCII-only contract); fixed before landing — see [pflag-plan-phase-1-code-review.md](pflag-plan-phase-1-code-review.md). |
 | [2 — duplicate-name validation](pflag-plan-phase-2-duplicate-detection.md) | Not started | | |
 | [3 — `pflagBackend` core](pflag-plan-phase-3-backend.md) | Not started | | |
 | [4 — example and docs](pflag-plan-phase-4-example-docs.md) | Not started | | |
