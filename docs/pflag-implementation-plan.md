@@ -46,10 +46,18 @@ satisfies the unexported `fieldAwareBackend` and (proposed)
 `nameCollisionBackend` interfaces. Go requires an unexported interface
 method to be declared in the *same* package as the implementing type for
 the method sets to match, so a `pflagBackend` type living in the new
-`pflag` package cannot satisfy either interface as drafted today. Resolving
-this — by exporting a new hook, introducing a shared internal package, or
-some other mechanism — is now open design work blocking Phase 2/3, not yet
-decided. See the note in each affected phase document.
+`pflag` package cannot satisfy either interface as drafted today.
+
+**Decided:** resolve this with an embeddable "seal" adapter exported from
+`confstruct` per hook (`FieldLookupSeal`, `NameCollisionSeal`), rather than
+exporting `fieldAwareBackend`/`nameCollisionBackend` themselves. A plain
+exported interface was considered and rejected — it would make "any
+backend can veto a `Populate` call" a public, third-party-implementable
+capability, which is more generic than this library otherwise exposes. See
+[pflag-integration.md#cross-package-hook-mechanism-decided](pflag-integration.md#cross-package-hook-mechanism-decided)
+for the full mechanism and rationale. Each affected phase document below
+has been updated to sketch against this mechanism instead of the plain
+unexported interfaces.
 
 ## Phases
 

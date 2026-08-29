@@ -94,13 +94,114 @@ Decided: the `pflag` backend ships as its own package,
   `nameCollisionBackend` interface. Go only allows an unexported interface
   method to be satisfied by a method declared in the *same* package as the
   interface, so a `pflagBackend` type living in the new `pflag` package
-  cannot implement either as drafted. Making that outline work — exporting
-  a new hook from `confstruct`, an internal shared package, or some other
-  mechanism — is open design work introduced by this decision, not yet
-  resolved. See the equivalent note in
-  [pflag-plan-phase-2-duplicate-detection.md](pflag-plan-phase-2-duplicate-detection.md)
-  and
-  [pflag-plan-phase-3-backend.md](pflag-plan-phase-3-backend.md).
+  cannot implement either as drafted. See [Cross-package hook
+  mechanism](#cross-package-hook-mechanism-decided) below for how this is
+  resolved.
+
+### Cross-package hook mechanism (decided)
+
+Decided: `confstruct` exposes each unexported hook to an out-of-package
+backend through a small embeddable **seal** type, rather than exporting
+`fieldAwareBackend`/`nameCollisionBackend` (or their methods) directly. The
+rejected alternative — a plain exported interface with exported methods —
+was considered and set aside because it turns "any backend can supply
+per-field struct-tag data" and, more pointedly, "any backend can veto an
+entire `Populate` call" into public API surface implementable by anyone.
+That is a materially more generic capability than this library otherwise
+exposes (see [Design constraints](../AGENTS.md#design-constraints)), and
+once shipped as a plain exported interface it cannot be narrowed again
+without breaking whoever implemented it. The seal keeps the same
+cross-package capability available, but only to a backend that explicitly
+embeds the type `confstruct` provides — it is not implementable from
+scratch by an arbitrary external type.
+
+Mechanism, using the field-lookup hook as the concrete example (the
+name-collision hook in [Duplicate flag name
+detection](#duplicate-flag-name-detection) follows the identical shape):
+
+```go
+// package confstruct
+
+// FieldLookuper is implemented by a backend, defined outside this package,
+// that wants the reflect.StructField chain for each entry (to read a tag
+// such as cs.pflag), not just its dot-separated path. Embed FieldLookupSeal
+// in the backend type and construct it with NewFieldLookupSeal(that type)
+// to opt in — see fieldAwareBackend, which this seal exists to satisfy from
+// another package.
+type FieldLookuper interface {
+    LookupFieldValue(path string, fields []reflect.StructField) (any, bool, error)
+}
+
+// FieldLookupSeal adapts an externally implemented FieldLookuper into the
+// package-private fieldAwareBackend hook that Populate actually consults.
+// Go requires an unexported interface method to be declared in the same
+// package as the interface for a type to satisfy it; embedding
+// FieldLookupSeal lets an out-of-package backend satisfy fieldAwareBackend
+// by promotion, because the promoted method is the one declared here.
+type FieldLookupSeal struct {
+    impl FieldLookuper
+}
+
+func NewFieldLookupSeal(impl FieldLookuper) FieldLookupSeal {
+    return FieldLookupSeal{impl: impl}
+}
+
+func (s FieldLookupSeal) lookupField(path string, fields []reflect.StructField) (any, bool, error) {
+    return s.impl.LookupFieldValue(path, fields)
+}
+```
+
+`pflagBackend` embeds `confstruct.FieldLookupSeal` and implements
+`LookupFieldValue`. Because the seal needs a live reference back to
+`pflagBackend`, the backend can only be built through a constructor, not a
+bare struct literal:
+
+```go
+// package pflag
+
+type pflagBackend struct {
+    confstruct.FieldLookupSeal
+    flags *pflag.FlagSet
+}
+
+func PFlag(flags *pflag.FlagSet) confstruct.Backend {
+    b := &pflagBackend{flags: flags}
+    b.FieldLookupSeal = confstruct.NewFieldLookupSeal(b)
+    return b
+}
+
+func (b *pflagBackend) LookupFieldValue(path string, fields []reflect.StructField) (any, bool, error) {
+    // real cs.pflag resolution logic
+}
+```
+
+This is invisible to an application: `PFlag(flags)` was always going to be
+a constructor returning `confstruct.Backend`, per [Recommended
+direction](#recommended-direction) — nothing about this mechanism changes
+application-facing code.
+
+A parallel `NameCollisionChecker`/`NameCollisionSeal` pair, and an exported
+`FieldPath` struct (`Path string`, `Chain []reflect.StructField`) to carry
+what the currently-unexported `fieldPath` carries, resolve the equivalent
+problem for `nameCollisionBackend` — see
+[pflag-plan-phase-2-duplicate-detection.md](pflag-plan-phase-2-duplicate-detection.md)
+for that hook's exact shape.
+
+One consequence for error formatting: `backendErr` (`confstruct.go:583`) is
+an unexported *function*, not an interface method, so no seal or embedding
+trick gives `pflagBackend` access to it — that restriction is unrelated to
+the interface-satisfaction problem above and isn't solved by it. This
+turns out not to matter for `lookupField`: `walkAndInject` already wraps
+whatever plain error a `fieldAwareBackend.lookupField` call returns with
+`backendErr` at its own call site (`confstruct.go:625`), exactly as it
+does today for `Env`/`File`'s `lookupField` — neither of which calls
+`backendErr` itself. `pflagBackend.LookupFieldValue` should follow the same
+pattern and simply return a plain, unwrapped error. `checkNames`/
+`CheckFieldNames` has no equivalent wrap-at-call-site in the [proposed
+`Populate` wiring](pflag-plan-phase-2-duplicate-detection.md#23-wiring-in-populate-confstructgo425-465),
+so `pflagBackend` builds its own complete `"confstruct: backend %q ...: %w"`
+text there by hand (using its own `Name()`), rather than needing
+`backendErr` itself.
 
 ## Semantics
 
@@ -276,8 +377,10 @@ themselves are no longer open.
    part of this backend's own diff.
 6. **Package layout.** Decided: the backend lives in its own package,
    `github.com/suyono3484/confstruct/pflag`, not in the root `confstruct`
-   package. See [Package layout](#package-layout) for the rationale and the
-   open mechanism question it raises for Phases 2 and 3.
+   package. See [Package layout](#package-layout) for the rationale, and
+   [Cross-package hook mechanism](#cross-package-hook-mechanism-decided)
+   for how `pflagBackend` still satisfies `confstruct`'s unexported
+   per-field hooks despite living outside that package.
 
 ### Identifier-to-flag-name conversion
 

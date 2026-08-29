@@ -14,13 +14,15 @@ support](pflag-integration.md#type-support).
 **Package layout (decided):** `pflagBackend` and this whole file live in the
 new `github.com/suyono3484/confstruct/pflag` package (see
 [pflag-integration.md#package-layout](pflag-integration.md#package-layout)),
-not in package `confstruct`. The sketch in [3.2](#32-new-file-pflagpflaggo) below
-predates that decision and needs updating: it uses `package confstruct` and
-calls the unexported `fieldAwareBackend`/`backendErr` hooks directly, none
-of which a separate package can do. This phase depends on however
-[Phase 2](pflag-plan-phase-2-duplicate-detection.md#package-layout-decided--blocker-for-this-phase-as-drafted)
-resolves the cross-package mechanism question — treat the code below as the
-shape of the intent, not a buildable sketch, until that's settled.
+not in package `confstruct`. `pflagBackend` satisfies `confstruct`'s
+unexported `fieldAwareBackend` hook by embedding the exported
+`confstruct.FieldLookupSeal` and implementing `LookupFieldValue`, per
+[pflag-integration.md#cross-package-hook-mechanism-decided](pflag-integration.md#cross-package-hook-mechanism-decided).
+It never calls `backendErr` directly — that unexported function isn't
+reachable across the package boundary regardless of the seal, but
+`walkAndInject` already wraps whatever plain error `lookupField` returns at
+its own call site, exactly as it does today for `Env`/`File`. The sketch in
+[3.2](#32-new-file-pflagpflaggo) below is updated to this shape.
 
 ## Tracker
 
@@ -48,10 +50,12 @@ Cobra exposes `*pflag.FlagSet` directly via `cmd.Flags()`.
 Mirrors `env.go`'s shape (license header, package, doc comment on the
 constructor) as far as style goes, but note it is `package pflag`, in its
 own directory, importing `confstruct` rather than being part of it — see
-the package-layout note above. The unexported `backendErr` call below is a
-placeholder for whatever cross-package mechanism Phase 2 settles on (an
-exported equivalent, most likely); it will not compile as an unexported
-`confstruct` symbol referenced from another package.
+the package-layout note above. `pflagBackend` embeds both seal types from
+[pflag-integration.md#cross-package-hook-mechanism-decided](pflag-integration.md#cross-package-hook-mechanism-decided)
+and [Phase 2.1](pflag-plan-phase-2-duplicate-detection.md#21-new-optional-backend-interface),
+which is why `PFlag` must be a real constructor rather than a bare struct
+literal — the seals need a reference back to `b` that only exists once `b`
+is allocated.
 
 ```go
 package pflag
@@ -68,6 +72,8 @@ import (
 const PFlagBackendName = "pflag"
 
 type pflagBackend struct {
+	confstruct.FieldLookupSeal
+	confstruct.NameCollisionSeal
 	flags *spfpflag.FlagSet
 }
 
@@ -81,7 +87,10 @@ type pflagBackend struct {
 // through to the next lower-precedence layer. See
 // docs/pflag-integration.md for the full design rationale.
 func PFlag(flags *spfpflag.FlagSet) confstruct.Backend {
-	return &pflagBackend{flags: flags}
+	b := &pflagBackend{flags: flags}
+	b.FieldLookupSeal = confstruct.NewFieldLookupSeal(b)
+	b.NameCollisionSeal = confstruct.NewNameCollisionSeal(b)
+	return b
 }
 
 func (b *pflagBackend) Name() string { return PFlagBackendName }
@@ -94,7 +103,7 @@ func (b *pflagBackend) Describe() string {
 }
 
 // Lookup derives a flag name straight from path, for direct Backend use
-// outside of Populate/Meta. Populate itself always calls lookupField
+// outside of Populate/Meta. Populate itself always calls LookupFieldValue
 // instead, since only that path has the struct-field chain a cs.pflag tag
 // lives on.
 func (b *pflagBackend) Lookup(path string) (any, bool, error) {
@@ -102,10 +111,14 @@ func (b *pflagBackend) Lookup(path string) (any, bool, error) {
 	return b.lookupName(name)
 }
 
-func (b *pflagBackend) lookupField(path string, fields []reflect.StructField) (any, bool, error) {
+// LookupFieldValue satisfies confstruct.FieldLookuper; FieldLookupSeal
+// forwards fieldAwareBackend.lookupField calls here. The returned error is
+// deliberately unwrapped -- walkAndInject wraps it with backendErr at its
+// own call site, exactly as it does for Env/File.
+func (b *pflagBackend) LookupFieldValue(path string, fields []reflect.StructField) (any, bool, error) {
 	name, err := pflagName(path, fields)
 	if err != nil {
-		return nil, false, backendErr("lookup", b, path, err)
+		return nil, false, err
 	}
 	return b.lookupName(name)
 }
@@ -118,8 +131,10 @@ func (b *pflagBackend) lookupName(name string) (any, bool, error) {
 	return flag.Value.String(), true, nil
 }
 
-func (b *pflagBackend) checkNames(entries []fieldPath) error {
-	// see Phase 2.4: docs/pflag-plan-phase-2-duplicate-detection.md#24-pflagbackendchecknames
+// CheckFieldNames satisfies confstruct.NameCollisionChecker; see Phase 2.4:
+// docs/pflag-plan-phase-2-duplicate-detection.md#24-pflagbackendcheckfieldnames
+func (b *pflagBackend) CheckFieldNames(entries []confstruct.FieldPath) error {
+	// see Phase 2.4
 }
 ```
 

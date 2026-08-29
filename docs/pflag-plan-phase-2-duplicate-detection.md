@@ -15,57 +15,48 @@ it up against every backend in the same recursive step — there is no
 existing pass that first collects every entry field's path and tag, across
 the whole tree, before backends are consulted.
 
-**Package layout (decided) — blocker for this phase as drafted:** the
-`pflag` backend now lives in its own package,
-`github.com/suyono3484/confstruct/pflag`, not in package `confstruct` (see
+**Package layout (decided):** the `pflag` backend now lives in its own
+package, `github.com/suyono3484/confstruct/pflag`, not in package
+`confstruct` (see
 [pflag-integration.md#package-layout](pflag-integration.md#package-layout)).
-Everything below — `nameCollisionBackend` as an *unexported* interface in
-`confstruct.go`, satisfied by `pflagBackend.checkNames` — assumes the two
-types are declared in the same package. Go requires an unexported interface
-method to be declared in the same package as the interface for a type to
-satisfy it, so a `pflagBackend` defined in package `pflag` cannot implement
-`nameCollisionBackend` as written here. This phase cannot proceed exactly as
-drafted; it needs one of:
-
-- exporting `nameCollisionBackend` (and `fieldPath`, since it appears in the
-  method signature) from `confstruct`, or
-- some other cross-package extension mechanism.
-
-This is new open design work created by the package-layout decision, not
-resolved by this document. The rest of this phase — the traversal shape,
-the scoping rules, the test matrix — is unaffected and still describes the
-intended behavior; only the *mechanism* by which `pflagBackend` hooks into
-`Populate`'s pre-pass needs to change from what's sketched in
-[2.1](#21-new-optional-backend-interface) and
-[2.4](#24-pflagbackendchecknames) below.
+`nameCollisionBackend` as a plain *unexported* interface in `confstruct.go`
+cannot be satisfied by `pflagBackend` from another package — Go requires an
+unexported interface method to be declared in the same package as the
+interface. **Decided:** this is resolved with an exported
+`NameCollisionSeal` type that `pflagBackend` embeds — see
+[pflag-integration.md#cross-package-hook-mechanism-decided](pflag-integration.md#cross-package-hook-mechanism-decided)
+for the full mechanism and why a plain exported interface was rejected in
+favor of it. [2.1](#21-new-optional-backend-interface) and
+[2.4](#24-pflagbackendcheckfieldnames) below are updated to sketch against
+that mechanism; the traversal shape, scoping rules, and test matrix
+elsewhere in this phase are unaffected.
 
 ## Tracker
 
 | Step | Status | Notes |
 | --- | --- | --- |
 | [2.1 New optional `Backend` interface](#21-new-optional-backend-interface) | Not started | |
-| [2.2 Collecting `[]fieldPath`](#22-collecting-fieldpath-before-the-value-walk) | Not started | |
+| [2.2 Collecting `[]FieldPath`](#22-collecting-fieldpath-before-the-value-walk) | Not started | |
 | [2.3 Wiring in `Populate`](#23-wiring-in-populate-confstructgo425-465) | Not started | |
-| [2.4 `pflagBackend.checkNames`](#24-pflagbackendchecknames) | Not started | |
+| [2.4 `pflagBackend.CheckFieldNames`](#24-pflagbackendcheckfieldnames) | Not started | |
 | [2.5 Tests](#25-tests--in-confstruct_testgo-or-a-new-pflag_testgo) | Not started | |
 
 Status values: `Not started`, `In progress`, `Done`.
 
 ## 2.1 New optional `Backend` interface
 
-*(See the package-layout note above — this sketch predates the decision to
-put `pflagBackend` in its own package, so it needs an exported or otherwise
-cross-package-satisfiable mechanism instead of an unexported interface.)*
-
-Add to `confstruct.go`, next to `fieldAwareBackend`:
+Add to `confstruct.go`, next to `fieldAwareBackend`, following the seal
+mechanism decided in
+[pflag-integration.md#cross-package-hook-mechanism-decided](pflag-integration.md#cross-package-hook-mechanism-decided):
 
 ```go
-// fieldPath is one entry field reachable from a single Populate call: its
+// FieldPath is one entry field reachable from a single Populate call: its
 // dot-separated struct path and the reflect.StructField chain leading to it
 // (same chain fieldAwareBackend.lookupField already receives per-field).
-type fieldPath struct {
-	path  string
-	chain []reflect.StructField
+// Exported so an out-of-package backend's NameCollisionChecker can read it.
+type FieldPath struct {
+	Path  string
+	Chain []reflect.StructField
 }
 
 // nameCollisionBackend is implemented by a backend that must validate,
@@ -74,7 +65,30 @@ type fieldPath struct {
 // backend-specific name. Returning a non-nil error fails the whole
 // Populate call before any value is injected into any field.
 type nameCollisionBackend interface {
-	checkNames(entries []fieldPath) error
+	checkNames(entries []FieldPath) error
+}
+
+// NameCollisionChecker is implemented by a backend, defined outside this
+// package, that wants nameCollisionBackend's validation hook. Embed
+// NameCollisionSeal in the backend type and construct it with
+// NewNameCollisionSeal(that type) to opt in.
+type NameCollisionChecker interface {
+	CheckFieldNames(entries []FieldPath) error
+}
+
+// NameCollisionSeal adapts an externally implemented NameCollisionChecker
+// into the package-private nameCollisionBackend hook, the same way
+// FieldLookupSeal adapts FieldLookuper into fieldAwareBackend.
+type NameCollisionSeal struct {
+	impl NameCollisionChecker
+}
+
+func NewNameCollisionSeal(impl NameCollisionChecker) NameCollisionSeal {
+	return NameCollisionSeal{impl: impl}
+}
+
+func (s NameCollisionSeal) checkNames(entries []FieldPath) error {
+	return s.impl.CheckFieldNames(entries)
 }
 ```
 
@@ -82,7 +96,7 @@ Only `pflagBackend` implements this initially. `Map`, `File`, `Env`,
 `Override` are unaffected — the type assertion in `Populate` simply won't
 match them.
 
-## 2.2 Collecting `[]fieldPath` before the value walk
+## 2.2 Collecting `[]FieldPath` before the value walk
 
 Add a pre-pass that mirrors `walkAndInject`'s traversal (skip `Meta`,
 recurse into plain nested structs, error on unexported entry fields) but
@@ -90,9 +104,9 @@ only collects paths/chains — it must not touch backends, since the whole
 point is to run before any `Lookup`:
 
 ```go
-func collectFieldPaths(sv reflect.Value, prefix string, chain []reflect.StructField, out *[]fieldPath) error {
+func collectFieldPaths(sv reflect.Value, prefix string, chain []reflect.StructField, out *[]FieldPath) error {
 	// same field/prefix/chain bookkeeping as walkAndInject (confstruct.go:538-597),
-	// minus backend interaction; append fieldPath{key, fieldChain} for each
+	// minus backend interaction; append FieldPath{key, fieldChain} for each
 	// entry field instead of calling lookupBackendValue/setSlot.
 }
 ```
@@ -110,7 +124,7 @@ stays about the `pflag` backend and not a `walkAndInject` refactor.
 Insert between the backend-registration checks and `walkAndInject`:
 
 ```go
-var fieldPaths []fieldPath
+var fieldPaths []FieldPath
 if err := collectFieldPaths(sv, "", nil, &fieldPaths); err != nil {
 	meta.state.Store(stateIdle)
 	return err
@@ -134,11 +148,23 @@ This runs after the "no backends" / "lowest layer watchable" checks but
 before `watchCtx`/`cancelWatches` are created, so a rejected call leaves no
 watch to cancel.
 
-## 2.4 `pflagBackend.checkNames`
+## 2.4 `pflagBackend.CheckFieldNames`
 
-*(Same caveat as [2.1](#21-new-optional-backend-interface): `pflagBackend`
-now lives in package `pflag`, so this method can only exist as sketched if
-`nameCollisionBackend` becomes satisfiable across a package boundary.)*
+`pflagBackend` embeds `confstruct.NameCollisionSeal` (see
+[2.1](#21-new-optional-backend-interface) and
+[pflag-integration.md#cross-package-hook-mechanism-decided](pflag-integration.md#cross-package-hook-mechanism-decided))
+and implements `CheckFieldNames`, the method the seal forwards to. Note
+this runs in package `pflag`, so it has no access to `confstruct`'s
+unexported `backendErr` — a seal or embedding trick only solves
+*interface*-method satisfaction, not access to an unexported *function*.
+That turns out not to matter: unlike `lookupField` (whose errors are
+wrapped once, uniformly, by `walkAndInject` itself — see
+[pflag-integration.md#cross-package-hook-mechanism-decided](pflag-integration.md#cross-package-hook-mechanism-decided)),
+there is no equivalent wrap point for `checkNames` in the [2.3
+wiring](#23-wiring-in-populate-confstructgo425-465) above, so
+`pflagBackend` builds its own complete `"confstruct: backend %q ...: %w"`
+text by hand, the same shape `backendErr` would have produced, using its
+own `Name()`.
 
 Because this pre-pass already has to compute `pflagName` for every field to
 group collisions, have it also surface invalid-tag errors here rather than
@@ -149,16 +175,16 @@ matches the aggregation principle in
 failure, not one fix-rerun-fix cycle per concern.
 
 ```go
-func (b *pflagBackend) checkNames(entries []fieldPath) error {
+func (b *pflagBackend) CheckFieldNames(entries []confstruct.FieldPath) error {
 	byName := make(map[string][]string, len(entries)) // resolved name -> field paths
 	var errs []error
 	for _, e := range entries {
-		name, err := pflagName(e.path, e.chain)
+		name, err := pflagName(e.Path, e.Chain)
 		if err != nil {
-			errs = append(errs, backendErr("field", b, e.path, err))
+			errs = append(errs, fmt.Errorf("confstruct: backend %q field %q: %w", b.Name(), e.Path, err))
 			continue
 		}
-		byName[name] = append(byName[name], e.path)
+		byName[name] = append(byName[name], e.Path)
 	}
 	for name, paths := range byName {
 		if len(paths) < 2 {
@@ -196,8 +222,7 @@ Now that `pflagBackend` lives in its own package (see the package-layout
 note above), split by what's actually being tested: the generic pre-pass
 wiring in `Populate` (2.2/2.3) belongs in `confstruct_test.go` alongside its
 existing tests, while `pflagBackend`'s own name-collision logic (2.4)
-belongs in `pflag/pflag_test.go`, once Phase 2's cross-package mechanism is
-settled.
+belongs in `pflag/pflag_test.go`.
 
 Directly from [the examples
 table](pflag-integration.md#examples) and [the rules
