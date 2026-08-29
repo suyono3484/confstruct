@@ -103,7 +103,11 @@ gaps in it:
   fields). Worth doing once there's a third real consumer justifying the
   abstraction — this plan is that third consumer, but the refactor itself
   is separable from shipping `pflag` and would make this already-large diff
-  harder to review.
+  harder to review. Now tracked as its own actionable item, with a
+  concrete suggested design, in
+  [docs/deferred/unify-struct-tree-traversal.md](deferred/unify-struct-tree-traversal.md) —
+  this bullet only records *that* it's out of scope for this plan, not the
+  full follow-up.
 - Everything under [Explicit
   non-goals](pflag-integration.md#explicit-non-goals) in the source
   doc — no key registry, no reads by flag/path string, no write-back to the
