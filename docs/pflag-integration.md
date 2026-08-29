@@ -199,9 +199,11 @@ does today for `Env`/`File`'s `lookupField` — neither of which calls
 pattern and simply return a plain, unwrapped error. `checkNames`/
 `CheckFieldNames` has no equivalent wrap-at-call-site in the [proposed
 `Populate` wiring](pflag-plan-phase-2-duplicate-detection.md#23-wiring-in-populate-confstructgo425-465),
-so `pflagBackend` builds its own complete `"confstruct: backend %q ...: %w"`
-text there by hand (using its own `Name()`), rather than needing
-`backendErr` itself.
+so `pflagBackend` gets its own small local helper, `pflagBackendErr`,
+mirroring `backendErr`'s exact format — see
+[pflag-plan-phase-2-duplicate-detection.md#24-pflagbackendcheckfieldnames](pflag-plan-phase-2-duplicate-detection.md#24-pflagbackendcheckfieldnames)
+for its definition and the distinct `"name-check"` action word it uses
+there.
 
 ## Semantics
 
@@ -655,8 +657,14 @@ weaker way to say the same thing.
 
    ```text
    confstruct: backend "pflag": duplicate flag name "with-key": fields
-   "SvcA.WithKey" and "SvcA.AltKey" both resolve to it
+   "SvcA.WithKey" and "SvcA.AltKey" resolve to it
    ```
+
+   Uses a plain Oxford-comma-and join of the colliding paths ("A" and "B";
+   "A", "B", and "C") with no "both"/"all" qualifier — the plural "fields"
+   already carries that, and a fixed ending avoids branching on count. See
+   [pflag-plan-phase-2-duplicate-detection.md#24-pflagbackendcheckfieldnames](pflag-plan-phase-2-duplicate-detection.md#24-pflagbackendcheckfieldnames)
+   for the exact implementation.
 
    If a struct has more than one colliding group, report all of them in one
    error rather than stopping at the first, so a fix does not require

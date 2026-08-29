@@ -157,14 +157,36 @@ and implements `CheckFieldNames`, the method the seal forwards to. Note
 this runs in package `pflag`, so it has no access to `confstruct`'s
 unexported `backendErr` — a seal or embedding trick only solves
 *interface*-method satisfaction, not access to an unexported *function*.
-That turns out not to matter: unlike `lookupField` (whose errors are
-wrapped once, uniformly, by `walkAndInject` itself — see
+That turns out not to matter for `lookupField` (whose errors are wrapped
+once, uniformly, by `walkAndInject` itself — see
 [pflag-integration.md#cross-package-hook-mechanism-decided](pflag-integration.md#cross-package-hook-mechanism-decided)),
-there is no equivalent wrap point for `checkNames` in the [2.3
-wiring](#23-wiring-in-populate-confstructgo425-465) above, so
-`pflagBackend` builds its own complete `"confstruct: backend %q ...: %w"`
-text by hand, the same shape `backendErr` would have produced, using its
-own `Name()`.
+but `checkNames` has no equivalent wrap point in the [2.3
+wiring](#23-wiring-in-populate-confstructgo425-465) above, so `pflagBackend`
+gets its own tiny local helper mirroring `backendErr`'s exact format:
+
+```go
+// pflagBackendErr mirrors confstruct's unexported backendErr, which
+// pflagBackend cannot call directly across the package boundary (embedding
+// a seal only solves interface-method satisfaction, not access to an
+// unexported function). Keeps every hand-built pflagBackend error in the
+// same "confstruct: backend %q <action> %q: <cause>" shape.
+func pflagBackendErr(action string, b *pflagBackend, key string, err error) error {
+	return fmt.Errorf("confstruct: backend %q %s %q: %w", b.Name(), action, key, err)
+}
+```
+
+**Decided: the action word for an invalid-tag error caught here is
+`"name-check"`, not `"field"` or `"lookup"`.** `"field"` already means a
+`setSlot`/coercion failure elsewhere in `confstruct.go`
+(`backendErr("field", ...)`, `confstruct.go:628`) — reusing it here for an
+unrelated failure (an invalid tag, caught structurally, before any value
+coercion) would make the same word mean two different things depending on
+context. `"lookup"` is what `walkAndInject` uses when this exact
+`pflagName` error is instead caught later, during a real `lookupField`
+call (`confstruct.go:625`) — a case this pre-pass makes unreachable for
+`pflag` in practice, since `CheckFieldNames` computes `pflagName` for every
+field before any lookup runs, but the two call sites still deserve their
+own distinct wording rather than colliding on one.
 
 Because this pre-pass already has to compute `pflagName` for every field to
 group collisions, have it also surface invalid-tag errors here rather than
@@ -181,16 +203,23 @@ func (b *pflagBackend) CheckFieldNames(entries []confstruct.FieldPath) error {
 	for _, e := range entries {
 		name, err := pflagName(e.Path, e.Chain)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("confstruct: backend %q field %q: %w", b.Name(), e.Path, err))
+			errs = append(errs, pflagBackendErr("name-check", b, e.Path, err))
 			continue
 		}
 		byName[name] = append(byName[name], e.Path)
 	}
-	for name, paths := range byName {
+	names := make([]string, 0, len(byName))
+	for name := range byName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		paths := byName[name]
 		if len(paths) < 2 {
 			continue
 		}
-		errs = append(errs, fmt.Errorf("confstruct: backend %q: duplicate flag name %q: fields %s all resolve to it",
+		sort.Strings(paths)
+		errs = append(errs, fmt.Errorf("confstruct: backend %q: duplicate flag name %q: fields %s resolve to it",
 			PFlagBackendName, name, quotedJoin(paths)))
 	}
 	if len(errs) == 0 {
@@ -200,21 +229,60 @@ func (b *pflagBackend) CheckFieldNames(entries []confstruct.FieldPath) error {
 }
 ```
 
-`quotedJoin` — small local helper (`"%q" join with ", "`) — matches the
-example error format in the source doc:
+**Decided: `quotedJoin` renders a natural, Oxford-comma-and-joined,
+quoted list — no "both"/"all" qualifier in the surrounding message.**
+`["A", "B"]` → `"A" and "B"`; `["A", "B", "C"]` → `"A", "B", and "C"`. This
+lives in `pflag/pflag.go` alongside `CheckFieldNames`, not `confstruct.go`
+— it's pflag-specific formatting, not a shared hook:
 
+```go
+// quotedJoin renders paths (already sorted by the caller) as a natural,
+// comma-and-joined, quoted list: ["A","B"] -> `"A" and "B"`,
+// ["A","B","C"] -> `"A", "B", and "C"`.
+func quotedJoin(paths []string) string {
+	switch len(paths) {
+	case 1:
+		return fmt.Sprintf("%q", paths[0])
+	case 2:
+		return fmt.Sprintf("%q and %q", paths[0], paths[1])
+	default:
+		quoted := make([]string, len(paths))
+		for i, p := range paths {
+			quoted[i] = fmt.Sprintf("%q", p)
+		}
+		last := len(quoted) - 1
+		return strings.Join(quoted[:last], ", ") + ", and " + quoted[last]
+	}
+}
 ```
+
+This produces, for the two-field case:
+
+```text
 confstruct: backend "pflag": duplicate flag name "with-key": fields
-"SvcA.WithKey" and "SvcA.AltKey" both resolve to it
+"SvcA.WithKey" and "SvcA.AltKey" resolve to it
 ```
 
-Map iteration order is nondeterministic; sort `paths` (they're already in
-struct declaration order from the traversal, so this is likely a no-op) and
-sort the outer `name` keys before appending to `errs` so repeated runs
-produce byte-identical error text — this project has already hit
-nondeterministic-output bugs once (see recent commit `91026bb`), so treat
-map-iteration order as a footgun by default here, not an oversight to catch
-later.
+matching the (now-updated) example in
+[pflag-integration.md#duplicate-flag-name-detection](pflag-integration.md#duplicate-flag-name-detection).
+The doc's earlier text used "both resolve to it" for exactly this
+two-field case; that wording is dropped in favor of always ending "resolve
+to it" so the message doesn't need to branch on count.
+
+`CheckFieldNames` and `quotedJoin` add `"sort"` and `"strings"` to
+whatever import block ends up in `pflag/pflag.go` — not shown in [Phase
+3.2](pflag-plan-phase-3-backend.md#32-new-file-pflagpflaggo)'s current
+import list, since that sketch predates this code landing in the same
+file.
+
+Map iteration order is nondeterministic; sort `paths` within each
+collision group (done above, right before formatting — struct-declaration
+order from the traversal makes this likely a no-op, but don't rely on
+that) and sort the outer `byName` keys before appending to `errs` so
+repeated runs produce byte-identical error text — this project has already
+hit nondeterministic-output bugs once (see recent commit `91026bb`), so
+treat map-iteration order as a footgun by default here, not an oversight
+to catch later.
 
 ## 2.5 Tests — in `confstruct_test.go` or a new `pflag/pflag_test.go`
 
