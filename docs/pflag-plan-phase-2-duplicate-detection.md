@@ -53,11 +53,11 @@ always returns the fixed constant `PFlagBackendName`.
 
 | Step | Status | Notes |
 | --- | --- | --- |
-| [2.1 New optional `Backend` interface](#21-new-optional-backend-interface) | Not started | |
-| [2.2 Collecting `[]FieldPath`](#22-collecting-fieldpath-before-the-value-walk) | Not started | |
-| [2.3 Wiring in `Populate`](#23-wiring-in-populate-confstructgo425-465) | Not started | |
-| [2.4 Field-name-collision detection (`checkFieldNames`)](#24-field-name-collision-detection-checkfieldnames) | Not started | |
-| [2.5 Tests](#25-tests--in-confstruct_testgo-and-pflagpflag_collision_testgo) | Not started | |
+| [2.1 New optional `Backend` interface](#21-new-optional-backend-interface) | Done | `FieldPath`, `nameCollisionBackend`, `NameCollisionChecker`, `NameCollisionSeal` added to `confstruct.go`, including the nil-`impl` guard. |
+| [2.2 Collecting `[]FieldPath`](#22-collecting-fieldpath-before-the-value-walk) | Done | `collectFieldPaths` added to `confstruct.go`. |
+| [2.3 Wiring in `Populate`](#23-wiring-in-populate-confstructgo425-465) | Done | Inserted after the lowest-layer-watchable check, before `watchCtx` creation, as sketched. |
+| [2.4 Field-name-collision detection (`checkFieldNames`)](#24-field-name-collision-detection-checkfieldnames) | Done | `pflag/pflag_collision.go`: `checkFieldNames`, `quotedJoin`, `pflagBackendErr`, `PFlagBackendName`. |
+| [2.5 Tests](#25-tests--in-confstruct_testgo-and-pflagpflag_collision_testgo) | Done | `confstruct_test.go` (generic wiring, 5 tests) and `pflag/pflag_collision_test.go` (collision logic + `quotedJoin`, 9 tests). All green, including `-race`. |
 
 Status values: `Not started`, `In progress`, `Done`.
 
