@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -969,5 +970,42 @@ func TestPopulate_collectFieldPathsUnexportedEntryFieldFails(t *testing.T) {
 	}
 	if len(stub.checkedCalls) != 0 {
 		t.Errorf("checkNames was called %d times; want 0 -- collectFieldPaths must fail before checkNames runs", len(stub.checkedCalls))
+	}
+}
+
+// TestCollectFieldPathsAndWalkAndInjectAgreeOnUnexportedEntryField guards
+// against collectFieldPaths and walkAndInject silently drifting apart on
+// which fields they reject as unexported entry fields. The two functions
+// duplicate this check independently (see
+// docs/pflag-plan-phase-2-code-review.md, finding 1); no Populate-driven
+// test can catch a mismatch, since collectFieldPaths always runs first and
+// Populate stops at the first failure, so walkAndInject never even runs on
+// a struct collectFieldPaths already rejected. This test calls both
+// functions directly against the same struct value to compare their
+// behavior head-to-head.
+func TestCollectFieldPathsAndWalkAndInjectAgreeOnUnexportedEntryField(t *testing.T) {
+	type badConfig struct {
+		Meta
+		name StringEntry
+	}
+	var cfg badConfig
+	sv := reflect.ValueOf(&cfg).Elem()
+
+	var fieldPaths []FieldPath
+	collectErr := collectFieldPaths(sv, "", nil, &fieldPaths)
+
+	var errs []error
+	var pending []func()
+	walkErr := walkAndInject(context.Background(), sv, &cfg.Meta, "", nil, &errs, &pending)
+
+	if collectErr == nil {
+		t.Fatal("collectFieldPaths: expected error for unexported entry field, got nil")
+	}
+	if walkErr == nil {
+		t.Fatal("walkAndInject: expected error for unexported entry field, got nil")
+	}
+	if collectErr.Error() != walkErr.Error() {
+		t.Errorf("collectFieldPaths and walkAndInject disagree on an unexported entry field:\n  collectFieldPaths: %q\n  walkAndInject:     %q",
+			collectErr.Error(), walkErr.Error())
 	}
 }
