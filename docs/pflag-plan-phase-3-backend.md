@@ -67,6 +67,13 @@ which is why `PFlag` must be a real constructor rather than a bare struct
 literal — the seals need a reference back to `b` that only exists once `b`
 is allocated.
 
+**`PFlagBackendName` already exists — do not redeclare it here.** Phase 2
+needed it before `pflagBackend` did (`checkFieldNames`/`pflagBackendErr`
+both reference it), so it's already declared in `pflag/pflag_collision.go`.
+Declaring it again in this file would be a duplicate top-level declaration
+in the same package and fail to compile. The sketch below omits it; use
+the constant from `pflag_collision.go` as-is.
+
 ```go
 package pflag
 
@@ -77,9 +84,6 @@ import (
 	"github.com/suyono3484/confstruct"
 	spfpflag "github.com/spf13/pflag"
 )
-
-// PFlagBackendName is the Name() identifier for a PFlag backend.
-const PFlagBackendName = "pflag"
 
 type pflagBackend struct {
 	confstruct.FieldLookupSeal
