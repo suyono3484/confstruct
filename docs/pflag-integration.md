@@ -1,9 +1,16 @@
-# Working draft: `spf13/pflag` backend
+# `spf13/pflag` backend
 
 ## Status
 
-Exploration only. This document proposes an integration shape; it does not
-commit the public API or add `pflag` as a dependency.
+Implemented. `github.com/suyono3484/confstruct/pflag` ships `PFlag`, and
+`github.com/spf13/pflag` is a direct `go.mod` dependency — see
+[pflag-implementation-plan.md](pflag-implementation-plan.md) for the
+phased implementation history (Phases 0-3 done; Phase 4, the example app
+and this status update, is what's landing this change). The design
+decisions recorded below are settled, not exploratory; this document is
+now the design-rationale reference for the shipped backend, the same role
+[populate-error-handling.md](populate-error-handling.md) plays for
+`Populate`'s error handling.
 
 ## Problem
 
@@ -49,8 +56,12 @@ type Config struct {
 
     ListenAddr confstruct.StringEntry
     Database   struct {
-        Host confstruct.StringEntry
-        Port confstruct.IntEntry
+        // Untagged, Database.Host/Database.Port would derive to
+        // database-host/database-port (see Mapping flag names to fields
+        // below) -- tagged here to match the shorter flag names this
+        // example registers.
+        Host confstruct.StringEntry `cs.pflag:"db-host"`
+        Port confstruct.IntEntry    `cs.pflag:"db-port"`
     }
 }
 
@@ -358,9 +369,9 @@ them into a pflag set with `AddGoFlagSet`, which is pflag's existing bridge.
 
 Every open question originally raised for this backend has a recorded
 decision below, each expanded in its own subsection or linked document.
-"Exploration only" in [Status](#status) still applies to the backend as a
-whole — none of this is implemented yet — but the design questions
-themselves are no longer open.
+All of it is now implemented — see [Status](#status) — so what follows is
+the settled rationale behind the shipped design, not a list of design
+questions still to be resolved before implementation.
 
 1. **Name conversion.** Decided: derive flag names with the word-boundary
    rules in [Identifier-to-flag-name
