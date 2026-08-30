@@ -1009,3 +1009,43 @@ func TestCollectFieldPathsAndWalkAndInjectAgreeOnUnexportedEntryField(t *testing
 			collectErr.Error(), walkErr.Error())
 	}
 }
+
+// TestFieldLookupSeal_PanicsWithoutConstructor guards the misuse case the
+// nil-impl check exists for: a backend that embeds FieldLookupSeal but
+// never calls NewFieldLookupSeal (e.g. a bare struct literal instead of
+// going through a real constructor like PFlag) must get a clear, actionable
+// panic instead of a bare nil-interface dereference trace.
+func TestFieldLookupSeal_PanicsWithoutConstructor(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected a panic, got none")
+		}
+		want := "confstruct: FieldLookupSeal used without NewFieldLookupSeal"
+		if r != want {
+			t.Errorf("panic value = %v, want %q", r, want)
+		}
+	}()
+
+	var seal FieldLookupSeal
+	_, _, _ = seal.lookupField("path", nil)
+}
+
+// TestNameCollisionSeal_PanicsWithoutConstructor is the NameCollisionSeal
+// counterpart to TestFieldLookupSeal_PanicsWithoutConstructor, for the
+// identical misuse case.
+func TestNameCollisionSeal_PanicsWithoutConstructor(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected a panic, got none")
+		}
+		want := "confstruct: NameCollisionSeal used without NewNameCollisionSeal"
+		if r != want {
+			t.Errorf("panic value = %v, want %q", r, want)
+		}
+	}()
+
+	var seal NameCollisionSeal
+	_ = seal.checkNames(nil)
+}

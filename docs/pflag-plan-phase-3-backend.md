@@ -217,6 +217,15 @@ implementation](pflag-integration.md#test-matrix-for-an-implementation):
   them (reuse [Phase 1](pflag-plan-phase-1-name-conversion.md)'s table as
   fixtures, wired through an actual `pflag.FlagSet` + `Populate` this time,
   not just the naming helper in isolation).
+- `pflagBackend.Lookup` used directly, bypassing `Populate` entirely —
+  matching how `file_test.go` tests `File`'s `Lookup` in isolation (e.g.
+  `TestFile_YAML`, `TestFile_CaseInsensitive`). Construct a `*pflag.FlagSet`,
+  call `PFlag(flags).Lookup("Database.Port")` directly, and confirm it
+  resolves the same derived name `derivedPFlagNameFromPath` already proves
+  correct in isolation (`pflag/pflag_name_test.go`), returns the flag's
+  value when `Changed`, and returns `ok == false` when not. Since `Lookup`
+  has no `reflect.StructField` chain to read, also confirm a `cs.pflag`-only
+  override is *not* honored through this path — only through `Populate`.
 - A missing flag (no flag by that name in the `FlagSet` at all) falls
   through without error.
 - Values parse into every supported entry type — string, bool, every signed
