@@ -129,6 +129,39 @@ type fieldAwareBackend interface {
 	lookupField(path string, fields []reflect.StructField) (any, bool, error)
 }
 
+// FieldLookuper is implemented by a backend, defined outside this package,
+// that wants the reflect.StructField chain for each entry (to read a tag
+// such as cs.pflag), not just its dot-separated path. Embed FieldLookupSeal
+// in the backend type and construct it with NewFieldLookupSeal(that type)
+// to opt in. See docs/pflag-integration.md#cross-package-hook-mechanism-decided
+// for why this indirection exists: Go requires an unexported interface
+// method to be declared in the same package as the interface, so a backend
+// defined outside this package cannot satisfy fieldAwareBackend directly.
+type FieldLookuper interface {
+	LookupFieldValue(path string, fields []reflect.StructField) (any, bool, error)
+}
+
+// FieldLookupSeal adapts an externally implemented FieldLookuper into the
+// package-private fieldAwareBackend hook. Embed FieldLookupSeal in a backend
+// type declared in another package and construct it with
+// NewFieldLookupSeal(that type); the promoted lookupField method then
+// satisfies fieldAwareBackend by delegating to LookupFieldValue.
+type FieldLookupSeal struct {
+	impl FieldLookuper
+}
+
+// NewFieldLookupSeal returns a FieldLookupSeal that forwards to impl.
+func NewFieldLookupSeal(impl FieldLookuper) FieldLookupSeal {
+	return FieldLookupSeal{impl: impl}
+}
+
+func (s FieldLookupSeal) lookupField(path string, fields []reflect.StructField) (any, bool, error) {
+	if s.impl == nil {
+		panic("confstruct: FieldLookupSeal used without NewFieldLookupSeal")
+	}
+	return s.impl.LookupFieldValue(path, fields)
+}
+
 // FieldPath is one entry field reachable from a single Populate call: its
 // dot-separated struct path and the reflect.StructField chain leading to it
 // (same chain fieldAwareBackend.lookupField already receives per-field).

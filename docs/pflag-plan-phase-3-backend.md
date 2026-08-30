@@ -24,6 +24,16 @@ reachable across the package boundary regardless of the seal, but
 its own call site, exactly as it does today for `Env`/`File`. The sketch in
 [3.2](#32-new-file-pflagpflaggo) below is updated to this shape.
 
+**Prerequisite now done:** `confstruct.FieldLookuper`/`FieldLookupSeal`
+were only documented in
+[pflag-integration.md#cross-package-hook-mechanism-decided](pflag-integration.md#cross-package-hook-mechanism-decided)
+until now — no phase actually added them to `confstruct.go`, even though
+this file's sketch assumed they existed (mirroring how `NameCollisionSeal`
+was added to `confstruct.go` in Phase 2, but its `FieldLookuper` sibling
+was not). They're now implemented, next to `fieldAwareBackend`, with the
+same nil-`impl` guard `NameCollisionSeal.checkNames` has. `pflagBackend`
+can now actually embed `confstruct.FieldLookupSeal` as sketched below.
+
 ## Tracker
 
 | Step | Status | Notes |
