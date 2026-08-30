@@ -80,6 +80,56 @@ func TestDerivedPFlagName_invalidCharacter(t *testing.T) {
 	}
 }
 
+func TestDerivedPFlagNameFromPath(t *testing.T) {
+	cases := []struct {
+		path string
+		want string
+	}{
+		{"Port", "port"},
+		{"ListenAddr", "listen-addr"},
+		{"TLS", "tls"},
+		{"TLSConfig", "tls-config"},
+		{"HTTPServerPort", "http-server-port"},
+		{"HTTP2Server", "http2-server"},
+		{"Server2Port", "server2-port"},
+		{"IPv6Address", "i-pv6-address"},
+		{"Database.HTTP2ServerPort", "database-http2-server-port"},
+		{"", ""},
+	}
+
+	for _, c := range cases {
+		t.Run(c.path, func(t *testing.T) {
+			got, err := derivedPFlagNameFromPath(c.path)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != c.want {
+				t.Errorf("derivedPFlagNameFromPath(%q) = %q, want %q", c.path, got, c.want)
+			}
+		})
+	}
+}
+
+func TestDerivedPFlagNameFromPath_invalidCharacter(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+	}{
+		{"underscore", "DB_Host"},
+		{"non-ASCII letter", "Café"},
+		{"invalid segment nested", "Database.DB_Host"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := derivedPFlagNameFromPath(c.path)
+			if err == nil {
+				t.Fatalf("expected error for path %q, got nil", c.path)
+			}
+		})
+	}
+}
+
 func TestPFlagName_derivedFallbackInvalidCharacter(t *testing.T) {
 	_, err := pflagName("DB_Host", []reflect.StructField{field("DB_Host")})
 	if err == nil {

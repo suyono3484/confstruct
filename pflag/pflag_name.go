@@ -118,6 +118,29 @@ func derivedPFlagName(fields []reflect.StructField) (string, error) {
 	return strings.Join(segments, "-"), nil
 }
 
+// derivedPFlagNameFromPath derives a flag name from a plain dot-separated
+// path, with no reflect.StructField chain available. This is the fallback
+// used by pflagBackend.Lookup for direct Backend use outside of Populate --
+// see docs/pflag-integration.md#mapping-flag-names-to-fields: a hybrid
+// backend like pflag supports both a field-aware mode (lookupField, which
+// can read a cs.pflag tag override) and a plain key-value mode with only a
+// path string and no tag to consult. Populate itself never calls this; it
+// always has a real field chain and resolves through pflagName instead.
+func derivedPFlagNameFromPath(path string) (string, error) {
+	segments := strings.Split(path, ".")
+	words := make([]string, 0, len(segments))
+	for _, seg := range segments {
+		segWords, err := splitIdentifierWords(seg)
+		if err != nil {
+			return "", fmt.Errorf("invalid path %q: segment %q: %w", path, seg, err)
+		}
+		if len(segWords) > 0 {
+			words = append(words, strings.Join(segWords, "-"))
+		}
+	}
+	return strings.Join(words, "-"), nil
+}
+
 // pflagName resolves the final flag name for one entry field: the trimmed
 // cs.pflag tag if present (validated against pflagTagRe), otherwise the
 // derived name.

@@ -117,11 +117,15 @@ func (b *pflagBackend) Describe() string {
 }
 
 // Lookup derives a flag name straight from path, for direct Backend use
-// outside of Populate/Meta. Populate itself always calls LookupFieldValue
-// instead, since only that path has the struct-field chain a cs.pflag tag
-// lives on.
+// outside of Populate/Meta -- pflag's plain key-value mode, with no
+// reflect.StructField chain and therefore no cs.pflag tag to honor.
+// Populate itself always calls LookupFieldValue instead, since only that
+// path has the struct-field chain a cs.pflag tag lives on.
 func (b *pflagBackend) Lookup(path string) (any, bool, error) {
-	name := derivedPFlagName(splitPathIntoChainlessSegments(path))
+	name, err := derivedPFlagNameFromPath(path)
+	if err != nil {
+		return nil, false, err
+	}
 	return b.lookupName(name)
 }
 
@@ -157,16 +161,27 @@ func (b *pflagBackend) CheckFieldNames(entries []confstruct.FieldPath) error {
 }
 ```
 
-`derivedPFlagName` currently takes a `[]reflect.StructField` chain (Phase
-1), but plain `Backend.Lookup(path)` only has a dot-separated string, with
-no `reflect.StructField`s to inspect for a `cs.pflag` tag — which is exactly
-why the doc calls this "Fallback for direct Backend use" and why the tag
-only ever applies through `Populate`. Give `derivedPFlagName` a sibling that
-accepts plain path segments (split on `.`) so `Lookup` can still derive a
-name without needing a fabricated `reflect.StructField` chain — do not
-special-case `Lookup` on top of `Populate`'s literal call path, since bare
-`Backend.Lookup` is a legitimate direct-use entry point documented for every
-other backend (`Env.Lookup`, `File.Lookup`).
+**Done, ahead of this phase:** `derivedPFlagName` takes a
+`[]reflect.StructField` chain (Phase 1), but plain `Backend.Lookup(path)`
+only has a dot-separated string, with no `reflect.StructField`s to inspect
+for a `cs.pflag` tag — which is exactly why the doc calls this "Fallback
+for direct Backend use" and why the tag only ever applies through
+`Populate`. `derivedPFlagName` now has a sibling,
+`derivedPFlagNameFromPath(path string) (string, error)`
+(`pflag/pflag_name.go`), that splits `path` on `.` and runs
+`splitIdentifierWords` per segment directly — no fabricated
+`reflect.StructField` chain involved, matching the framing in
+[pflag-integration.md#mapping-flag-names-to-fields](pflag-integration.md#mapping-flag-names-to-fields):
+`pflag` is a hybrid backend (see the earlier package-layout note), and
+`Lookup`/`derivedPFlagNameFromPath` are its plain key-value mode, parallel
+to `lookupField`/`pflagName` being its field-aware mode. This isn't a
+special case bolted onto `Populate`'s literal call path — bare
+`Backend.Lookup` is a legitimate direct-use entry point documented for
+every other backend (`Env.Lookup`, `File.Lookup`), and `pflagBackend`'s
+version needs to work correctly on its own, independent of whether
+`Populate` ever calls it. Covered by `TestDerivedPFlagNameFromPath` and
+`TestDerivedPFlagNameFromPath_invalidCharacter` in
+`pflag/pflag_name_test.go`.
 
 ## 3.3 Type coercion
 
