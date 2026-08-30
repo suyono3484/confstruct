@@ -57,8 +57,9 @@
 // field names: "Host", "DB.Name", "DB.Pool.Max". The path is derived from the
 // Go field names in the struct definition. Some built-in backends may
 // additionally consult struct tags while resolving their own source-specific
-// keys; for example, the Env backend recognizes `cs.env` and the File backend
-// recognizes `cs.file.segment-alias`.
+// keys; for example, the Env backend recognizes `cs.env`, the File backend
+// recognizes `cs.file.segment-alias`, and the optional PFlag backend
+// (github.com/suyono3484/confstruct/pflag) recognizes `cs.pflag`.
 //
 // # Layering
 //
@@ -127,6 +128,90 @@ var (
 
 type fieldAwareBackend interface {
 	lookupField(path string, fields []reflect.StructField) (any, bool, error)
+}
+
+// FieldLookuper is implemented by a backend, defined outside this package,
+// that wants the reflect.StructField chain for each entry (to read a tag
+// such as cs.pflag), not just its dot-separated path. Embed FieldLookupSeal
+// in the backend type and construct it with NewFieldLookupSeal(that type)
+// to opt in. See docs/pflag-integration.md#cross-package-hook-mechanism-decided
+// for why this indirection exists: Go requires an unexported interface
+// method to be declared in the same package as the interface, so a backend
+// defined outside this package cannot satisfy fieldAwareBackend directly.
+type FieldLookuper interface {
+	LookupFieldValue(path string, fields []reflect.StructField) (any, bool, error)
+}
+
+// FieldLookupSeal adapts an externally implemented FieldLookuper into the
+// package-private fieldAwareBackend hook. Embed FieldLookupSeal in a backend
+// type declared in another package and construct it with
+// NewFieldLookupSeal(that type); the promoted lookupField method then
+// satisfies fieldAwareBackend by delegating to LookupFieldValue.
+type FieldLookupSeal struct {
+	impl FieldLookuper
+}
+
+// NewFieldLookupSeal returns a FieldLookupSeal that forwards to impl.
+func NewFieldLookupSeal(impl FieldLookuper) FieldLookupSeal {
+	return FieldLookupSeal{impl: impl}
+}
+
+func (s FieldLookupSeal) lookupField(path string, fields []reflect.StructField) (any, bool, error) {
+	if s.impl == nil {
+		panic("confstruct: FieldLookupSeal used without NewFieldLookupSeal")
+	}
+	return s.impl.LookupFieldValue(path, fields)
+}
+
+// FieldPath is one entry field reachable from a single Populate call: its
+// dot-separated struct path and the reflect.StructField chain leading to it
+// (same chain fieldAwareBackend.lookupField already receives per-field).
+// Exported so an out-of-package backend's NameCollisionChecker can read it.
+type FieldPath struct {
+	Path  string
+	Chain []reflect.StructField
+}
+
+// nameCollisionBackend is implemented by a backend that must validate,
+// once per Populate call and before any Lookup runs, that no two entry
+// fields reachable from the target struct resolve to the same
+// backend-specific name. Returning a non-nil error fails the whole
+// Populate call before any value is injected into any field.
+type nameCollisionBackend interface {
+	checkNames(entries []FieldPath) error
+}
+
+// NameCollisionChecker is implemented by a backend, defined outside this
+// package, that wants nameCollisionBackend's validation hook. Embed
+// NameCollisionSeal in the backend type and construct it with
+// NewNameCollisionSeal(that type) to opt in. See
+// docs/pflag-integration.md#cross-package-hook-mechanism-decided for why
+// this indirection exists: Go requires an unexported interface method to
+// be declared in the same package as the interface, so a backend defined
+// outside this package cannot satisfy nameCollisionBackend directly.
+type NameCollisionChecker interface {
+	CheckFieldNames(entries []FieldPath) error
+}
+
+// NameCollisionSeal adapts an externally implemented NameCollisionChecker
+// into the package-private nameCollisionBackend hook. Embed NameCollisionSeal
+// in a backend type declared in another package and construct it with
+// NewNameCollisionSeal(that type); the promoted checkNames method then
+// satisfies nameCollisionBackend by delegating to CheckFieldNames.
+type NameCollisionSeal struct {
+	impl NameCollisionChecker
+}
+
+// NewNameCollisionSeal returns a NameCollisionSeal that forwards to impl.
+func NewNameCollisionSeal(impl NameCollisionChecker) NameCollisionSeal {
+	return NameCollisionSeal{impl: impl}
+}
+
+func (s NameCollisionSeal) checkNames(entries []FieldPath) error {
+	if s.impl == nil {
+		panic("confstruct: NameCollisionSeal used without NewNameCollisionSeal")
+	}
+	return s.impl.CheckFieldNames(entries)
 }
 
 // populateState tracks the lifecycle of a single Meta across Populate calls.
@@ -475,6 +560,25 @@ func Populate(ctx context.Context, cfgStruct any) error {
 		return fmt.Errorf("confstruct: lowest-priority backend must not be a WatchableBackend")
 	}
 
+	var fieldPaths []FieldPath
+	if err := collectFieldPaths(sv, "", nil, &fieldPaths); err != nil {
+		meta.state.Store(stateIdle)
+		return err
+	}
+
+	var nameErrs []error
+	for _, b := range meta.backends {
+		if ncb, ok := b.(nameCollisionBackend); ok {
+			if err := ncb.checkNames(fieldPaths); err != nil {
+				nameErrs = append(nameErrs, err)
+			}
+		}
+	}
+	if len(nameErrs) > 0 {
+		meta.state.Store(stateIdle)
+		return errors.Join(nameErrs...)
+	}
+
 	watchCtx, cancelWatches := context.WithCancel(ctx)
 	meta.watchCancel = cancelWatches
 
@@ -570,6 +674,45 @@ func collectUnset(sv reflect.Value, prefix string, unset *[]string) error {
 
 		if f.Type.Kind() == reflect.Struct {
 			if err := collectUnset(fv, key, unset); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// collectFieldPaths walks sv depth-first, collecting a FieldPath for every
+// entry field reachable from it, before any backend is consulted. Mirrors
+// walkAndInject's traversal shape (skip Meta, recurse into plain nested
+// structs, reject unexported entry fields) without touching backends --
+// the whole point is to run before any Lookup, so a nameCollisionBackend
+// can validate structurally.
+func collectFieldPaths(sv reflect.Value, prefix string, chain []reflect.StructField, out *[]FieldPath) error {
+	st := sv.Type()
+	for i := 0; i < st.NumField(); i++ {
+		f := st.Field(i)
+		fv := sv.Field(i)
+
+		if f.Type == metaType {
+			continue
+		}
+
+		key := f.Name
+		if prefix != "" {
+			key = prefix + "." + f.Name
+		}
+		fieldChain := appendFieldChain(chain, f)
+
+		if reflect.PointerTo(f.Type).Implements(layerManagerType) {
+			if !f.IsExported() {
+				return fmt.Errorf("confstruct: field %q is an unexported entry field; entry fields must be exported", key)
+			}
+			*out = append(*out, FieldPath{Path: key, Chain: fieldChain})
+			continue
+		}
+
+		if f.Type.Kind() == reflect.Struct {
+			if err := collectFieldPaths(fv, key, fieldChain, out); err != nil {
 				return err
 			}
 		}

@@ -1,9 +1,16 @@
-# Working draft: `spf13/pflag` backend
+# `spf13/pflag` backend
 
 ## Status
 
-Exploration only. This document proposes an integration shape; it does not
-commit the public API or add `pflag` as a dependency.
+Implemented. `github.com/suyono3484/confstruct/pflag` ships `PFlag`, and
+`github.com/spf13/pflag` is a direct `go.mod` dependency — see
+[pflag-implementation-plan.md](pflag-implementation-plan.md) for the
+phased implementation history (Phases 0-3 done; Phase 4, the example app
+and this status update, is what's landing this change). The design
+decisions recorded below are settled, not exploratory; this document is
+now the design-rationale reference for the shipped backend, the same role
+[populate-error-handling.md](populate-error-handling.md) plays for
+`Populate`'s error handling.
 
 ## Problem
 
@@ -21,10 +28,16 @@ string-keyed configuration reads.
 
 ## Recommended direction
 
-Add an optional static backend, tentatively named `PFlag`:
+Add an optional static backend, tentatively named `PFlag`, living in its own
+package, `github.com/suyono3484/confstruct/pflag`, rather than as another
+file in the root `confstruct` package alongside `env.go`/`file.go`. See
+[Package layout](#package-layout) below for why and what it implies for the
+proposed implementation outline.
 
 ```go
-func PFlag(flags *pflag.FlagSet) Backend
+package pflag
+
+func PFlag(flags *pflag.FlagSet) confstruct.Backend
 ```
 
 The backend owns no parsing and performs no writes. The application defines
@@ -32,13 +45,23 @@ and parses its flags, adds the resulting backend as its highest-precedence
 layer, and then calls `Populate`.
 
 ```go
+import (
+    "github.com/suyono3484/confstruct"
+    cspflag "github.com/suyono3484/confstruct/pflag"
+    "github.com/spf13/pflag"
+)
+
 type Config struct {
     confstruct.Meta
 
     ListenAddr confstruct.StringEntry
     Database   struct {
-        Host confstruct.StringEntry
-        Port confstruct.IntEntry
+        // Untagged, Database.Host/Database.Port would derive to
+        // database-host/database-port (see Mapping flag names to fields
+        // below) -- tagged here to match the shorter flag names this
+        // example registers.
+        Host confstruct.StringEntry `cs.pflag:"db-host"`
+        Port confstruct.IntEntry    `cs.pflag:"db-port"`
     }
 }
 
@@ -53,7 +76,7 @@ func main() {
     cfg.AddLayer(confstruct.Map(defaultValues))
     cfg.AddLayer(fileBackend)
     cfg.AddLayer(envBackend)
-    cfg.AddLayer(confstruct.PFlag(flags)) // explicitly supplied CLI flags win
+    cfg.AddLayer(cspflag.PFlag(flags)) // explicitly supplied CLI flags win
 
     if err := confstruct.Populate(context.Background(), &cfg); err != nil {
         log.Fatal(err)
@@ -65,6 +88,146 @@ func main() {
 are intended to win. Like `Map`, it is static and may technically be used as
 the first layer, but that will normally leave entries unset because an
 unprovided flag is absent rather than a default.
+
+## Package layout
+
+Decided: the `pflag` backend ships as its own package,
+`github.com/suyono3484/confstruct/pflag`, not as another file in the root
+`confstruct` package. Two direct consequences:
+
+- Any file importing both this new package and `github.com/spf13/pflag`
+  needs an import alias, since both packages are named `pflag` — see the
+  `cspflag` alias used above and in the [Recommended
+  direction](#recommended-direction) example.
+- The [Proposed implementation outline](#proposed-implementation-outline)
+  below, as written, has `pflagBackend` satisfy the unexported
+  `fieldAwareBackend` hook and the Phase-2-proposed unexported
+  `nameCollisionBackend` interface. Go only allows an unexported interface
+  method to be satisfied by a method declared in the *same* package as the
+  interface, so a `pflagBackend` type living in the new `pflag` package
+  cannot implement either as drafted. See [Cross-package hook
+  mechanism](#cross-package-hook-mechanism-decided) below for how this is
+  resolved.
+
+### Cross-package hook mechanism (decided)
+
+Decided: `confstruct` exposes each unexported hook to an out-of-package
+backend through a small embeddable **seal** type, rather than exporting
+`fieldAwareBackend`/`nameCollisionBackend` (or their methods) directly. The
+rejected alternative — a plain exported interface with exported methods —
+was considered and set aside because it turns "any backend can supply
+per-field struct-tag data" and, more pointedly, "any backend can veto an
+entire `Populate` call" into public API surface implementable by anyone.
+That is a materially more generic capability than this library otherwise
+exposes (see [Design constraints](../AGENTS.md#design-constraints)), and
+once shipped as a plain exported interface it cannot be narrowed again
+without breaking whoever implemented it. The seal keeps the same
+cross-package capability available, but only to a backend that explicitly
+embeds the type `confstruct` provides — it is not implementable from
+scratch by an arbitrary external type.
+
+Mechanism, using the field-lookup hook as the concrete example (the
+name-collision hook in [Duplicate flag name
+detection](#duplicate-flag-name-detection) follows the identical shape):
+
+```go
+// package confstruct
+
+// FieldLookuper is implemented by a backend, defined outside this package,
+// that wants the reflect.StructField chain for each entry (to read a tag
+// such as cs.pflag), not just its dot-separated path. Embed FieldLookupSeal
+// in the backend type and construct it with NewFieldLookupSeal(that type)
+// to opt in — see fieldAwareBackend, which this seal exists to satisfy from
+// another package.
+type FieldLookuper interface {
+    LookupFieldValue(path string, fields []reflect.StructField) (any, bool, error)
+}
+
+// FieldLookupSeal adapts an externally implemented FieldLookuper into the
+// package-private fieldAwareBackend hook that Populate actually consults.
+// Go requires an unexported interface method to be declared in the same
+// package as the interface for a type to satisfy it; embedding
+// FieldLookupSeal lets an out-of-package backend satisfy fieldAwareBackend
+// by promotion, because the promoted method is the one declared here.
+type FieldLookupSeal struct {
+    impl FieldLookuper
+}
+
+func NewFieldLookupSeal(impl FieldLookuper) FieldLookupSeal {
+    return FieldLookupSeal{impl: impl}
+}
+
+func (s FieldLookupSeal) lookupField(path string, fields []reflect.StructField) (any, bool, error) {
+    if s.impl == nil {
+        panic("confstruct: FieldLookupSeal used without NewFieldLookupSeal")
+    }
+    return s.impl.LookupFieldValue(path, fields)
+}
+```
+
+The nil guard turns a misuse case — a backend embedding the seal but never
+calling `NewFieldLookupSeal` (e.g. an accidental bare struct literal
+instead of going through `PFlag`) — into a clear, actionable panic instead
+of a bare nil-interface dereference trace. `NameCollisionSeal.checkNames`
+carries the identical guard for the identical reason — see
+[pflag-plan-phase-2-duplicate-detection.md#21-new-optional-backend-interface](pflag-plan-phase-2-duplicate-detection.md#21-new-optional-backend-interface).
+
+`pflagBackend` embeds `confstruct.FieldLookupSeal` and implements
+`LookupFieldValue`. Because the seal needs a live reference back to
+`pflagBackend`, the backend can only be built through a constructor, not a
+bare struct literal:
+
+```go
+// package pflag
+
+type pflagBackend struct {
+    confstruct.FieldLookupSeal
+    flags *pflag.FlagSet
+}
+
+func PFlag(flags *pflag.FlagSet) confstruct.Backend {
+    b := &pflagBackend{flags: flags}
+    b.FieldLookupSeal = confstruct.NewFieldLookupSeal(b)
+    return b
+}
+
+func (b *pflagBackend) LookupFieldValue(path string, fields []reflect.StructField) (any, bool, error) {
+    // real cs.pflag resolution logic
+}
+```
+
+This is invisible to an application: `PFlag(flags)` was always going to be
+a constructor returning `confstruct.Backend`, per [Recommended
+direction](#recommended-direction) — nothing about this mechanism changes
+application-facing code.
+
+A parallel `NameCollisionChecker`/`NameCollisionSeal` pair, and an exported
+`FieldPath` struct (`Path string`, `Chain []reflect.StructField`) to carry
+what the currently-unexported `fieldPath` carries, resolve the equivalent
+problem for `nameCollisionBackend` — see
+[pflag-plan-phase-2-duplicate-detection.md](pflag-plan-phase-2-duplicate-detection.md)
+for that hook's exact shape.
+
+One consequence for error formatting: `backendErr` (`confstruct.go:583`) is
+an unexported *function*, not an interface method, so no seal or embedding
+trick gives `pflagBackend` access to it — that restriction is unrelated to
+the interface-satisfaction problem above and isn't solved by it. This
+turns out not to matter for `lookupField`: `walkAndInject` already wraps
+whatever plain error a `fieldAwareBackend.lookupField` call returns with
+`backendErr` at its own call site (`confstruct.go:625`), exactly as it
+does today for `Env`/`File`'s `lookupField` — neither of which calls
+`backendErr` itself. `pflagBackend.LookupFieldValue` should follow the same
+pattern and simply return a plain, unwrapped error. `checkNames`/
+`CheckFieldNames` has no equivalent wrap-at-call-site in the [proposed
+`Populate` wiring](pflag-plan-phase-2-duplicate-detection.md#23-wiring-in-populate-confstructgo425-465),
+so `pflag` gets its own small local helper, `pflagBackendErr`, mirroring
+`backendErr`'s exact format — see
+[pflag-plan-phase-2-duplicate-detection.md#24-field-name-collision-detection-checkfieldnames](pflag-plan-phase-2-duplicate-detection.md#24-field-name-collision-detection-checkfieldnames)
+for its definition and the distinct `"name-check"` action word it uses
+there. This lives as a standalone function, not a `pflagBackend` method —
+see that same section for why `checkNames`/`CheckFieldNames`'s whole
+implementation ships as a free function, `checkFieldNames`, ahead of
+`pflagBackend` itself existing.
 
 ## Semantics
 
@@ -156,7 +319,9 @@ schema and accommodates the common short-name cases.
 ## Proposed implementation outline
 
 `PFlag` can reuse the existing private `fieldAwareBackend` hook, as `Env` and
-`File` do:
+`File` do — **but see [Package layout](#package-layout): this only works if
+`pflagBackend` lives inside package `confstruct`, which is no longer the
+decided location, so this outline's mechanism needs revisiting**:
 
 ```go
 type pflagBackend struct {
@@ -204,9 +369,9 @@ them into a pflag set with `AddGoFlagSet`, which is pflag's existing bridge.
 
 Every open question originally raised for this backend has a recorded
 decision below, each expanded in its own subsection or linked document.
-"Exploration only" in [Status](#status) still applies to the backend as a
-whole — none of this is implemented yet — but the design questions
-themselves are no longer open.
+All of it is now implemented — see [Status](#status) — so what follows is
+the settled rationale behind the shipped design, not a list of design
+questions still to be resolved before implementation.
 
 1. **Name conversion.** Decided: derive flag names with the word-boundary
    rules in [Identifier-to-flag-name
@@ -236,6 +401,12 @@ themselves are no longer open.
    design (scope, aggregation, and error format). This is a `Populate`-level
    change, not `pflag`-specific, so it lands as a prerequisite rather than
    part of this backend's own diff.
+6. **Package layout.** Decided: the backend lives in its own package,
+   `github.com/suyono3484/confstruct/pflag`, not in the root `confstruct`
+   package. See [Package layout](#package-layout) for the rationale, and
+   [Cross-package hook mechanism](#cross-package-hook-mechanism-decided)
+   for how `pflagBackend` still satisfies `confstruct`'s unexported
+   per-field hooks despite living outside that package.
 
 ### Identifier-to-flag-name conversion
 
@@ -510,8 +681,14 @@ weaker way to say the same thing.
 
    ```text
    confstruct: backend "pflag": duplicate flag name "with-key": fields
-   "SvcA.WithKey" and "SvcA.AltKey" both resolve to it
+   "SvcA.WithKey" and "SvcA.AltKey" resolve to it
    ```
+
+   Uses a plain Oxford-comma-and join of the colliding paths ("A" and "B";
+   "A", "B", and "C") with no "both"/"all" qualifier — the plural "fields"
+   already carries that, and a fixed ending avoids branching on count. See
+   [pflag-plan-phase-2-duplicate-detection.md#24-field-name-collision-detection-checkfieldnames](pflag-plan-phase-2-duplicate-detection.md#24-field-name-collision-detection-checkfieldnames)
+   for the exact implementation.
 
    If a struct has more than one colliding group, report all of them in one
    error rather than stopping at the first, so a fix does not require

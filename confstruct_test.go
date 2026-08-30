@@ -17,6 +17,8 @@ package confstruct
 import (
 	"context"
 	"errors"
+	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -834,4 +836,216 @@ func TestOnResolve_NotFiredOnConcurrentPushDuringFailedPopulate(t *testing.T) {
 	if got := count.Load(); got != 0 {
 		t.Fatalf("OnResolve fire count during/before a failed Populate call: got %d, want 0 (err=%v)", got, populateErr)
 	}
+}
+
+// stubCollisionBackend is a test-only nameCollisionBackend implementation,
+// living inside package confstruct since the private interface can only be
+// satisfied here (a real cross-package backend uses NameCollisionSeal
+// instead). It also records every checkNames call's entries and counts
+// Lookup calls, so a test can assert the pre-pass ran with the right
+// FieldPaths and that no Lookup happened when checkNames rejected the call.
+type stubCollisionBackend struct {
+	err          error
+	checkedCalls [][]FieldPath
+	lookupCalls  atomic.Int64
+}
+
+func (b *stubCollisionBackend) Lookup(path string) (any, bool, error) {
+	b.lookupCalls.Add(1)
+	return nil, false, nil
+}
+
+func (b *stubCollisionBackend) Name() string     { return "stubCollision" }
+func (b *stubCollisionBackend) Describe() string { return "" }
+
+func (b *stubCollisionBackend) checkNames(entries []FieldPath) error {
+	b.checkedCalls = append(b.checkedCalls, entries)
+	return b.err
+}
+
+func TestPopulate_nameCollisionBackendBlocksPopulate(t *testing.T) {
+	var cfg testConfig
+	cfg.AddLayer(Map(map[string]any{"Name": "default", "Port": 1}))
+	stub := &stubCollisionBackend{err: fmt.Errorf("collision detected")}
+	cfg.AddLayer(stub)
+
+	err := Populate(context.Background(), &cfg)
+	if err == nil {
+		t.Fatal("expected Populate to fail")
+	}
+	if !strings.Contains(err.Error(), "collision detected") {
+		t.Errorf("err = %q, want it to contain %q", err.Error(), "collision detected")
+	}
+	if got := stub.lookupCalls.Load(); got != 0 {
+		t.Errorf("Lookup was called %d times; want 0 -- name collision must be checked before any Lookup", got)
+	}
+	if cfg.Name.IsSet() {
+		t.Error("Name should not be set after a name-collision failure")
+	}
+}
+
+func TestPopulate_nameCollisionBackendPassThrough(t *testing.T) {
+	var cfg testConfig
+	cfg.AddLayer(Map(map[string]any{"Name": "default", "Port": 1}))
+	stub := &stubCollisionBackend{err: nil}
+	cfg.AddLayer(stub)
+
+	if err := Populate(context.Background(), &cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.Name.IsSet() || cfg.Name.Value() != "default" {
+		t.Errorf("Name = %v (isSet=%v), want %q", cfg.Name.Value(), cfg.Name.IsSet(), "default")
+	}
+}
+
+func TestPopulate_nameCollisionErrorsFromMultipleBackendsAggregated(t *testing.T) {
+	var cfg testConfig
+	cfg.AddLayer(Map(map[string]any{"Name": "default", "Port": 1}))
+	stubA := &stubCollisionBackend{err: fmt.Errorf("collision A")}
+	stubB := &stubCollisionBackend{err: fmt.Errorf("collision B")}
+	cfg.AddLayer(stubA)
+	cfg.AddLayer(stubB)
+
+	err := Populate(context.Background(), &cfg)
+	if err == nil {
+		t.Fatal("expected Populate to fail")
+	}
+	for _, want := range []string{"collision A", "collision B"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, want it to contain %q", err.Error(), want)
+		}
+	}
+}
+
+func TestPopulate_collectFieldPathsSeesEveryEntryField(t *testing.T) {
+	var cfg testConfig
+	cfg.AddLayer(Map(map[string]any{"Name": "default", "Port": 1}))
+	stub := &stubCollisionBackend{}
+	cfg.AddLayer(stub)
+
+	if err := Populate(context.Background(), &cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stub.checkedCalls) != 1 {
+		t.Fatalf("checkNames called %d times, want 1", len(stub.checkedCalls))
+	}
+
+	got := make(map[string]int) // path -> chain length
+	for _, e := range stub.checkedCalls[0] {
+		got[e.Path] = len(e.Chain)
+	}
+	want := map[string]int{
+		"Name":          1,
+		"Port":          1,
+		"Debug":         1,
+		"Database.Host": 2,
+		"Database.Port": 2,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("collected %d field paths, want %d: got %v", len(got), len(want), got)
+	}
+	for path, chainLen := range want {
+		if got[path] != chainLen {
+			t.Errorf("field %q: chain length = %d, want %d", path, got[path], chainLen)
+		}
+	}
+}
+
+func TestPopulate_collectFieldPathsUnexportedEntryFieldFails(t *testing.T) {
+	type badConfig struct {
+		Meta
+		name StringEntry
+	}
+	var cfg badConfig
+	cfg.AddLayer(Map(map[string]any{"name": "x"}))
+	stub := &stubCollisionBackend{}
+	cfg.AddLayer(stub)
+
+	err := Populate(context.Background(), &cfg)
+	if err == nil {
+		t.Fatal("expected Populate to fail")
+	}
+	if !strings.Contains(err.Error(), "unexported entry field") {
+		t.Errorf("err = %q, want it to mention an unexported entry field", err.Error())
+	}
+	if len(stub.checkedCalls) != 0 {
+		t.Errorf("checkNames was called %d times; want 0 -- collectFieldPaths must fail before checkNames runs", len(stub.checkedCalls))
+	}
+}
+
+// TestCollectFieldPathsAndWalkAndInjectAgreeOnUnexportedEntryField guards
+// against collectFieldPaths and walkAndInject silently drifting apart on
+// which fields they reject as unexported entry fields. The two functions
+// duplicate this check independently (see
+// docs/pflag-plan-phase-2-code-review.md, finding 1); no Populate-driven
+// test can catch a mismatch, since collectFieldPaths always runs first and
+// Populate stops at the first failure, so walkAndInject never even runs on
+// a struct collectFieldPaths already rejected. This test calls both
+// functions directly against the same struct value to compare their
+// behavior head-to-head.
+func TestCollectFieldPathsAndWalkAndInjectAgreeOnUnexportedEntryField(t *testing.T) {
+	type badConfig struct {
+		Meta
+		name StringEntry
+	}
+	var cfg badConfig
+	sv := reflect.ValueOf(&cfg).Elem()
+
+	var fieldPaths []FieldPath
+	collectErr := collectFieldPaths(sv, "", nil, &fieldPaths)
+
+	var errs []error
+	var pending []func()
+	walkErr := walkAndInject(context.Background(), sv, &cfg.Meta, "", nil, &errs, &pending)
+
+	if collectErr == nil {
+		t.Fatal("collectFieldPaths: expected error for unexported entry field, got nil")
+	}
+	if walkErr == nil {
+		t.Fatal("walkAndInject: expected error for unexported entry field, got nil")
+	}
+	if collectErr.Error() != walkErr.Error() {
+		t.Errorf("collectFieldPaths and walkAndInject disagree on an unexported entry field:\n  collectFieldPaths: %q\n  walkAndInject:     %q",
+			collectErr.Error(), walkErr.Error())
+	}
+}
+
+// TestFieldLookupSeal_PanicsWithoutConstructor guards the misuse case the
+// nil-impl check exists for: a backend that embeds FieldLookupSeal but
+// never calls NewFieldLookupSeal (e.g. a bare struct literal instead of
+// going through a real constructor like PFlag) must get a clear, actionable
+// panic instead of a bare nil-interface dereference trace.
+func TestFieldLookupSeal_PanicsWithoutConstructor(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected a panic, got none")
+		}
+		want := "confstruct: FieldLookupSeal used without NewFieldLookupSeal"
+		if r != want {
+			t.Errorf("panic value = %v, want %q", r, want)
+		}
+	}()
+
+	var seal FieldLookupSeal
+	_, _, _ = seal.lookupField("path", nil)
+}
+
+// TestNameCollisionSeal_PanicsWithoutConstructor is the NameCollisionSeal
+// counterpart to TestFieldLookupSeal_PanicsWithoutConstructor, for the
+// identical misuse case.
+func TestNameCollisionSeal_PanicsWithoutConstructor(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected a panic, got none")
+		}
+		want := "confstruct: NameCollisionSeal used without NewNameCollisionSeal"
+		if r != want {
+			t.Errorf("panic value = %v, want %q", r, want)
+		}
+	}()
+
+	var seal NameCollisionSeal
+	_ = seal.checkNames(nil)
 }

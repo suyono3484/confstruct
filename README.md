@@ -434,13 +434,49 @@ The file is read once at construction time. `File` is a static backend.
 
 **Type notes:** JSON numbers unmarshal to `float64`; TOML integers unmarshal to `int64`; YAML integers unmarshal to `int`. All are handled by confstruct's numeric coercion — a `float64` from JSON fills an `Int32Entry` correctly, and so on. For very large integers (> 2^53), prefer YAML or TOML over JSON to avoid float64 precision loss.
 
+### PFlag
+
+`PFlag` reads explicitly-provided command-line flags from an already-parsed [`spf13/pflag`](https://github.com/spf13/pflag) `*FlagSet`. It lives in its own package, `github.com/suyono3484/confstruct/pflag`, not in the root `confstruct` package — since both packages are named `pflag`, any file importing both needs an import alias for one of them.
+
+```go
+import (
+    "github.com/suyono3484/confstruct"
+    cspflag "github.com/suyono3484/confstruct/pflag"
+    "github.com/spf13/pflag"
+)
+
+flags := pflag.NewFlagSet("myapp", pflag.ExitOnError)
+flags.String("listen-addr", "", "address to listen on")
+flags.Parse(os.Args[1:])
+
+cfg.AddLayer(cspflag.PFlag(flags)) // explicitly supplied CLI flags win
+```
+
+`PFlag` owns no parsing and performs no writes: the application defines and parses its flags, then adds the resulting backend as a layer — normally the highest-precedence one, since the whole point of a CLI flag is to override every other source. The caller must call `flags.Parse` before `Populate`; lookup happens during population, so calling `Populate` first would see every flag as unchanged.
+
+**Presence, not defaults.** Only a flag with `Changed == true` is considered present. An unprovided flag's declared default is not a configuration value — the entry falls through to the next lower-precedence layer instead of picking up that default. This preserves confstruct's set-versus-zero distinction: `--verbose=false` or `--db-port=0` remain explicitly set and still override a lower layer.
+
+By default, the long flag name is derived from the complete field path: Go identifiers are split at word boundaries, lowercased, and joined with `-` (`Database.HTTP2ServerPort` → `database-http2-server-port`). An entry field may override the derived name with a `cs.pflag` tag:
+
+```go
+type Config struct {
+    confstruct.Meta
+    Database struct {
+        Host confstruct.StringEntry `cs.pflag:"db-host"`
+    }
+}
+```
+
+This applies to every entry field, tagged or not — the tag is an escape hatch for names the derivation gets wrong (`IPv6Address` would otherwise derive to `i-pv6-address`), not a gate on which fields participate. An invalid `cs.pflag` tag, or two fields resolving to the same flag name within one `Populate` call, both cause `Populate` to fail before any value is injected.
+
+`PFlag` is a static backend (not watchable) — CLI arguments are fixed for the life of a process once `flags.Parse` returns.
+
 ## Other backend shapes
 
 The table below shows the shapes of backends you might implement or source from third-party packages. confstruct does not provide these.
 
 | Backend | Kind | Example source |
 |---|---|---|
-| Command-line flags | Static | `--port 8080` |
 | Consul | Watchable | Live key-value updates |
 | Vault | Watchable | Secret leases with renewal |
 | AWS Parameter Store | Watchable | SSM parameter change events |
