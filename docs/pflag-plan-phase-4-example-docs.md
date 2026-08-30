@@ -19,8 +19,8 @@ verbatim will hit the collision immediately.
 
 | Step | Status | Notes |
 | --- | --- | --- |
-| [4.1 Example app](#41-example-app) | Not started | |
-| [4.2 Optional cobra example](#42-optional-cobra-example) | Not started | |
+| [4.1 Example app](#41-example-app) | Done | `example/pflag/main.go` + `main_test.go`; verified with `go run -tags=example .` for both the no-flags and flags-provided cases, plus 3 automated tests. |
+| [4.2 Optional cobra example](#42-optional-cobra-example) | Not started | Skipped: duplicate-detection scoping is already covered by unit tests (Phase 2's `checkFieldNames` tests, `pflag_test.go`'s `TestPFlag_DuplicateNameFiresEvenWithoutRegisteredFlags`) with no runnable demonstration gap to fill. |
 | [4.3 Update `pflag-integration.md` status](#43-update-pflag-integrationmd-status) | Done | Fixed a real bug found in the same pass: the "Recommended direction" sketch registered `db-host`/`db-port` flags for untagged fields that actually derive to `database-host`/`database-port` — added the missing `cs.pflag` tags. |
 | [4.4 Update `populate-error-handling.md` status](#44-update-populate-error-handlingmd-status) | Done | Done early: `populate-error-handling.md` was rewritten into a settled design-rationale document (and its implementation-plan sibling, `pflag-plan-phase-0-error-handling.md`, retired) once Phase 0 shipped, rather than waiting for Phase 4 |
 | [4.5 Update `README.md`](#45-update-readmemd) | Done | Added a `### PFlag` section under Built-in backends; removed the now-false "Command-line flags... confstruct does not provide these" row from Other backend shapes. |

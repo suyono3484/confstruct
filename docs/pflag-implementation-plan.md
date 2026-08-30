@@ -87,7 +87,7 @@ applicable) are met, not when a PR merely opens.
 | [1 — name conversion](pflag-plan-phase-1-name-conversion.md) | Done | `add_pflag_phase1` branch | Code review found one issue (non-ASCII/underscore identifiers silently bypassing the ASCII-only contract); fixed before landing — see [pflag-plan-phase-1-code-review.md](pflag-plan-phase-1-code-review.md). |
 | [2 — duplicate-name validation](pflag-plan-phase-2-duplicate-detection.md) | Done | `add_pflag_phase1` branch | The `checkFieldNames` algorithm shipped as a standalone function ahead of `pflagBackend` (which doesn't exist until Phase 3) — see [pflag-plan-phase-2-duplicate-detection.md](pflag-plan-phase-2-duplicate-detection.md) for the sequencing decision. |
 | [3 — `pflagBackend` core](pflag-plan-phase-3-backend.md) | Done | `add_pflag_phase1` branch | `github.com/spf13/pflag` added as a direct dependency; `pflag/pflag.go` and `pflag/pflag_test.go` implement and cover the full backend. |
-| [4 — example and docs](pflag-plan-phase-4-example-docs.md) | Not started | | |
+| [4 — example and docs](pflag-plan-phase-4-example-docs.md) | Done | `add_pflag_phase1` branch | `example/pflag`, README and `pflag-integration.md` status updates. The optional cobra example (4.2) was skipped — no coverage gap it would have filled. This is the last phase; the `pflag` backend is fully implemented. |
 
 Status values: `Not started`, `In progress`, `Done`.
 
