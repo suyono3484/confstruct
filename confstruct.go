@@ -57,8 +57,9 @@
 // field names: "Host", "DB.Name", "DB.Pool.Max". The path is derived from the
 // Go field names in the struct definition. Some built-in backends may
 // additionally consult struct tags while resolving their own source-specific
-// keys; for example, the Env backend recognizes `cs.env` and the File backend
-// recognizes `cs.file.segment-alias`.
+// keys; for example, the Env backend recognizes `cs.env`, the File backend
+// recognizes `cs.file.segment-alias`, and the optional PFlag backend
+// (github.com/suyono3484/confstruct/pflag) recognizes `cs.pflag`.
 //
 // # Layering
 //

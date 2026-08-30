@@ -38,11 +38,11 @@ can now actually embed `confstruct.FieldLookupSeal` as sketched below.
 
 | Step | Status | Notes |
 | --- | --- | --- |
-| [3.1 Dependency](#31-dependency) | Not started | |
-| [3.2 New file `pflag/pflag.go`](#32-new-file-pflagpflaggo) | Not started | |
-| [3.3 Type coercion](#33-type-coercion) | Not started | |
-| [3.4 Tests](#34-tests--pflag_testgo) | Not started | |
-| [3.5 Godoc](#35-godoc) | Not started | |
+| [3.1 Dependency](#31-dependency) | Done | `github.com/spf13/pflag v1.0.10`, direct requirement. |
+| [3.2 New file `pflag/pflag.go`](#32-new-file-pflagpflaggo) | Done | `pflagBackend`, `PFlag`, `Lookup`, `LookupFieldValue`, `CheckFieldNames` implemented as sketched. |
+| [3.3 Type coercion](#33-type-coercion) | Done | Confirmed via `TestPFlag_AllEntryTypesCoerce`, `TestPFlag_Int8BoundaryOverflowRejected`, `TestPFlag_IncompatibleStringRejected`. |
+| [3.4 Tests](#34-tests--pflag_testgo) | Done | `pflag/pflag_test.go`, 14 tests covering the full matrix. All green under `-race`. |
+| [3.5 Godoc](#35-godoc) | Done | Package doc comment added to `pflag.go`; `confstruct.go`'s doc block now mentions `PFlag`/`cs.pflag` alongside `Env`/`File`. |
 
 Status values: `Not started`, `In progress`, `Done`.
 
